@@ -12,9 +12,20 @@
  *
  * This file owns no game state. It reads live values off the board / game
  * objects it is handed and draws them. The only things it keeps between
- * frames are (a) cached offscreen canvases (the CRT overlay, glyph metrics)
- * and (b) purely derived animation values, all computed from T.Util.now()
- * so there is nothing to tick and nothing to get out of sync.
+ * frames are (a) cached offscreen canvases (the CRT overlay, glyph metrics),
+ * (b) purely derived animation values, all computed from T.Util.now() so
+ * there is nothing to tick and nothing to get out of sync, and (c) the
+ * tapped-flash's id and start time (section 4) — presentation only, started
+ * from T.Util.now() like everything else, and read by nothing but this file.
+ *
+ * HIT REGIONS: because a canvas has no DOM children, nothing drawn here can
+ * be hit-tested unless this file says where it put things. So as each
+ * interactive thing is drawn its rectangle is recorded — in logical 960x720
+ * coordinates, as declarative DATA and never a callback — and published
+ * through beginRegions / addRegion / regions (section 4, SPEC-TOUCHUI.md §2).
+ * touch.js routes a tap; game.js's uiTap is the only place one is acted on.
+ * That is what makes the third variant thumbnail select variant 2 instead of
+ * cycling toward it, and it costs the keyboard and the pad nothing.
  *
  * The one exception, and it is deliberate: the select screen REMEMBERS each
  * player's character + variant through T.Util.storeGet / storeSet, under
@@ -442,6 +453,35 @@
     }
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * A filled chip with a tick struck through it — "this one is SELECTED".
+   *
+   * Drawn rather than typed for the same reason the infinity glyph is: the
+   * monospace stack cannot be trusted to carry a check mark, and a missing
+   * glyph would put a tofu box on the thing the player just chose. The chip
+   * carries a hard dark keyline so it reads over whatever art it lands on
+   * (SPEC-TOUCHUI.md §5 — on a touchscreen there is no hover, so the current
+   * choice has to be marked, not merely lit).
+   */
+  function selectedTick(ctx, x, y, size, color) {
+    const s = Math.max(8, Math.round(size));
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,8,14,0.85)';
+    ctx.fillRect(x - 1, y - 1, s + 2, s + 2);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, s, s);
+    ctx.strokeStyle = '#0b0c12';
+    ctx.lineWidth = Math.max(2, Math.round(s * 0.16));
+    ctx.lineCap = 'square';
+    ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    ctx.moveTo(x + s * 0.22, y + s * 0.52);
+    ctx.lineTo(x + s * 0.42, y + s * 0.74);
+    ctx.lineTo(x + s * 0.80, y + s * 0.26);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -1613,7 +1653,223 @@
   }
 
   /* =========================================================================
-   * 4. TITLE SCREEN
+   * 4. PUBLISHED HIT REGIONS  (SPEC-TOUCHUI.md §2, §4 and §5)
+   *
+   * THE ROOT CAUSE, stated plainly. This screen is drawn ONTO a canvas, and a
+   * canvas has no DOM children, so nothing inside it can be hit-tested. That
+   * is why choosing a variant ended up on START — not a bad binding, a missing
+   * mechanism. The fix is to give the canvas real hit regions: ui.js already
+   * computes the rectangle of everything it draws, so it records those
+   * rectangles as it draws them and publishes the list.
+   *
+   *   T.UI.beginRegions()      at the top of a screen's render
+   *   T.UI.addRegion(region)   as each interactive thing is drawn
+   *   T.UI.regions()           the list for the frame on screen
+   *
+   * A REGION IS DATA. { id, x, y, w, h, player, action, value }, in LOGICAL
+   * 960x720 coordinates, and never a callback: this file does not mutate game
+   * state and a region that carried a function would be exactly that, smuggled
+   * through a rectangle. touch.js converts a tap into logical coordinates and
+   * hit-tests the list; game.js's uiTap is the only place a region is acted
+   * on. Three files, one direction, no shared mutable anything.
+   *
+   * ALLOCATION. The select screen publishes about thirty regions and it does
+   * it sixty times a second, so the records are POOLED and rewritten in place
+   * (SPEC.md §12 forbids allocating in a per-frame path) and the ids are
+   * interned once rather than concatenated per frame. Read a region, do not
+   * keep it: the object you were handed is the one the next frame writes over.
+   *
+   * EVERY SCREEN CLEARS. beginRegions() runs at the top of every render entry
+   * point, including the ones that publish nothing, so the list can never grow
+   * without bound and a stale select-screen rectangle can never be left lying
+   * under the play field.
+   * ====================================================================== */
+
+  const REGION_POOL = [];    // records, reused frame to frame
+  const REGION_LIST = [];    // the live view handed to regions()
+
+  /** Clear the frame's region list. Called at the top of every render. */
+  function beginRegions() {
+    REGION_LIST.length = 0;
+  }
+
+  /** The regions published for the frame currently on screen. Read-only. */
+  function regions() {
+    return REGION_LIST;
+  }
+
+  /**
+   * Record one rectangle. Rejects anything that is not a finite, positive box
+   * and CLIPS to the canvas, so a region can never name a point a tap cannot
+   * reach (SPEC-TOUCHUI §6). Returns the pooled record, or null if it was
+   * rejected — nothing here throws, because it runs inside a render.
+   */
+  function pushRegion(id, x, y, w, h, player, action, value) {
+    if (typeof action !== 'string' || action === '') return null;
+    if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h)) return null;
+
+    let x0 = Math.round(x);
+    let y0 = Math.round(y);
+    let x1 = Math.round(x + w);
+    let y1 = Math.round(y + h);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > C.W) x1 = C.W;
+    if (y1 > C.H) y1 = C.H;
+    if (x1 <= x0 || y1 <= y0) return null;
+
+    const n = REGION_LIST.length;
+    let r = REGION_POOL[n];
+    if (!r) {
+      r = { id: '', x: 0, y: 0, w: 0, h: 0, player: null, action: '', value: null };
+      REGION_POOL[n] = r;
+    }
+    r.id = (typeof id === 'string') ? id : '';
+    r.x = x0;
+    r.y = y0;
+    r.w = x1 - x0;
+    r.h = y1 - y0;
+    r.player = (player === 0 || player === 1) ? player : null;
+    r.action = action;
+    r.value = (value === undefined) ? null : value;
+    REGION_LIST.push(r);
+    return r;
+  }
+
+  /** The public form: hand it a plain region object and it is recorded. */
+  function addRegion(region) {
+    if (!region || typeof region !== 'object') return null;
+    return pushRegion(region.id, region.x, region.y, region.w, region.h,
+                      region.player, region.action, region.value);
+  }
+
+  /* --- interned ids -------------------------------------------------------
+   * A region id is a stable string, because the tapped-flash below finds its
+   * rectangle by id a frame after the tap. Built once per (prefix, index) and
+   * handed back thereafter: `'p0.var' + i` in a per-frame path would allocate
+   * a string for every thumbnail on every frame (§12), and the two-level table
+   * turns that into two lookups.
+   */
+  const ID_POOL = Object.create(null);
+  function idFor(prefix, n) {
+    let bucket = ID_POOL[prefix];
+    if (bucket === undefined) {
+      bucket = [];
+      ID_POOL[prefix] = bucket;
+    }
+    let s = bucket[n];
+    if (s === undefined) {
+      s = prefix + n;
+      bucket[n] = s;
+    }
+    return s;
+  }
+
+  // The fixed ids, per slot where a slot owns one. Literals, so nothing on the
+  // per-frame path builds them.
+  const ID_VAR = ['p0.var', 'p1.var'];
+  const ID_CHAR = ['p0.char', 'p1.char'];
+  const ID_PREV = ['p0.charPrev', 'p1.charPrev'];
+  const ID_NEXT = ['p0.charNext', 'p1.charNext'];
+  const ID_READY = ['p0.ready', 'p1.ready'];
+  const ID_JOIN = ['p0.join', 'p1.join'];
+  const ID_MODE = { coop: 'mode.coop', classic: 'mode.classic' };
+  const ID_START = 'title.start';
+
+  /* -------------------------------------------------------------------------
+   * THE TAPPED FLASH  (SPEC-TOUCHUI.md §5)
+   *
+   * A tap that lands must be acknowledged within a frame, or a player cannot
+   * tell a small target was missed from the game ignoring them. game.js
+   * records the region a tap actually CHANGED something with, on Game.tapAck;
+   * this file turns that into a brief flash over the rectangle it published
+   * for that id.
+   *
+   * The timer is THIS FILE'S — the only thing in ui.js that survives a frame
+   * besides the cached canvases and it is presentation only. It is started
+   * from U.now(), like every other animation here, so there is nothing to tick
+   * and nothing to get out of sync; a tapAck is consumed once, by OBJECT
+   * IDENTITY (game.js allocates a fresh record per tap), so a second tap on
+   * the same target re-flashes and a paused frame does not.
+   *
+   * flashRegion(id) is exported so a caller with its own idea of what was
+   * tapped — a mouse path, a harness — can light the same lamp.
+   * ---------------------------------------------------------------------- */
+
+  // Fast enough to read as a response to the finger, long enough to see at 60
+  // fps. T.C may state one; this is the value the game ships with.
+  const TAP_FLASH_TIME = (typeof C.UI_TAP_FLASH_TIME === 'number' &&
+                          isFinite(C.UI_TAP_FLASH_TIME) &&
+                          C.UI_TAP_FLASH_TIME > 0)
+    ? C.UI_TAP_FLASH_TIME : 0.22;
+  const TAP_FLASH_FILL = 0.30;
+
+  let flashId = '';
+  let flashAt = 0;
+  let lastAck = null;
+
+  /** Light the flash on a published region id, starting now. */
+  function flashRegion(id) {
+    if (typeof id !== 'string' || id === '') return false;
+    flashId = id;
+    flashAt = U.now();
+    return true;
+  }
+
+  /**
+   * Pick up a tap game.js has acknowledged since the last frame. Reads only;
+   * `tapAck` belongs to game.js and nothing here writes it back.
+   */
+  function noteTapAck(g) {
+    const ack = g ? g.tapAck : null;
+    if (!ack || typeof ack !== 'object') return;
+    if (ack === lastAck) return;              // already flashed this one
+    lastAck = ack;
+    flashRegion(ack.id);
+  }
+
+  /** 0..1 remaining flash, 0 when there is none. */
+  function flashAmount() {
+    if (!flashId) return 0;
+    const dt = U.now() - flashAt;
+    if (!(dt >= 0) || dt >= TAP_FLASH_TIME) return 0;
+    return 1 - dt / TAP_FLASH_TIME;
+  }
+
+  /**
+   * Flash whatever was tapped, over the rectangle THIS frame published for it.
+   * Drawn last so it sits on top of the thing it is acknowledging, and driven
+   * by the live region list so a target that has moved (or gone) simply does
+   * not flash rather than flashing an empty patch of screen.
+   */
+  function drawTapFlash(ctx) {
+    const k = flashAmount();
+    if (k <= 0) {
+      flashId = '';
+      return;
+    }
+    for (let i = 0; i < REGION_LIST.length; i++) {
+      const r = REGION_LIST[i];
+      if (r.id !== flashId) continue;
+      // A region that IS the screen has nothing to point at, and washing the
+      // whole canvas butter-yellow would read as a fault rather than as an
+      // acknowledgement. The title's tap-anywhere is the only one of these.
+      if (r.w >= C.W && r.h >= C.H) return;
+      ctx.save();
+      ctx.globalAlpha = k * TAP_FLASH_FILL;
+      ctx.fillStyle = PAL.butter;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = PAL.butter;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3);
+      ctx.restore();
+      return;
+    }
+  }
+
+  /* =========================================================================
+   * 5. TITLE SCREEN
    * ====================================================================== */
 
   // Layout landmarks, all logical px. The score-advance table is a touch
@@ -1821,6 +2077,8 @@
 
   function renderTitle(ctx, g) {
     const t = U.now();
+    beginRegions();
+    noteTapAck(g);
     ctx.save();
 
     drawWordmark(ctx, 'TOASTER', C.W / 2, TITLE.line1Y, TITLE.wordSize, t, 0);
@@ -1883,11 +2141,20 @@
       size: 11, color: PAL.uiDim, align: 'center'
     });
 
+    /* SPEC-TOUCHUI §3: tapping anywhere on the title already started the game,
+     * and it still does — expressed as a region, so there is ONE mechanism
+     * that turns a tap into a game action rather than two that have to be kept
+     * in step. The whole canvas, because "anywhere" is what it has always
+     * meant and narrowing it to the blinking line would be a regression
+     * dressed up as a hit target. */
+    pushRegion(ID_START, 0, 0, C.W, C.H, null, 'start', null);
+    drawTapFlash(ctx);
+
     ctx.restore();
   }
 
   /* =========================================================================
-   * 5. CHARACTER SELECT
+   * 6. CHARACTER SELECT
    *
    * A NINE-character carousel, one per player (SPEC-CHARACTERS.md §4), each
    * character three variants deep for 27 playable versions (SPEC-VARIANTS.md
@@ -1943,6 +2210,13 @@
     ghostX: 126,
     ghostAlpha: 0.22,
     chevronX: 186,
+    // The TAP TARGET around each browse chevron (SPEC-TOUCHUI §3). Bigger than
+    // the 16px arrow inside it, because a thumb aimed at an arrow lands near
+    // it; kept clear of both the preview beside it and the panel border, so
+    // the pair can be padded out to the 56px floor without colliding with
+    // anything. 48 x 64 leaves 24px to the panel edge and 96 to the preview.
+    chevronBoxW: 48,
+    chevronBoxH: 64,
 
     // --- the variant picker ---------------------------------------------
     // Three thumbnails of THIS character in its three palettes, the current
@@ -1956,6 +2230,7 @@
     varCell: 62,          // 3 * 54px boxes with 8px between them
     varBoxW: 54,
     varBoxH: 44,
+    varThumbScale: 1,     // 1 on a mouse; SEL_TOUCH magnifies it for a thumb
     varDim: 0.42,         // the two variants you are NOT on
     varArrowX: 116,       // up/down arrows, outside the three boxes
     varArrowSize: 7,
@@ -2022,6 +2297,9 @@
     // pixel square at 44x34, which still clears the 22-wide neighbour in a
     // 40px cell by 7px.
     stripScale: 2,
+    // The eight you are NOT on, at their authored size. SEL_TOUCH is the only
+    // thing that ever moves this.
+    stripIconScale: 1,
     stripDim: 0.5,
 
     hintY: 524,
@@ -2034,10 +2312,166 @@
 
     modeLabelY: 568,
     modeY: 598,
+    // Half-extents of the CO-OP / CLASSIC tap targets around their words: the
+    // 26px tick either side plus a little, and enough height to take in the
+    // up/down arrows at +/-20 (SPEC-TOUCHUI §3).
+    modePadX: 30,
+    modePadY: 26,
     modeBlurbY: 624,
     hintsY: 650,
     hints2Y: 674
   };
+
+  /* -------------------------------------------------------------------------
+   * THE SAME PANEL, RE-SOLVED FOR A THUMB  (SPEC-TOUCHUI.md §4)
+   *
+   * The reported bug is that you cannot tap a variant. Half of that is routing
+   * — the hit regions below — and half is size: a variant thumbnail is
+   * LAY.varBoxW x LAY.varBoxH, 54x44 logical, which on an 11-inch iPad with
+   * both control columns reserved is 46x38 CSS px. The binding axis is 38,
+   * against the 56 T.C.UI_REGION_MIN_PX asks for. A target a third under the
+   * floor is a target you miss, and missing it is indistinguishable from the
+   * game ignoring you.
+   *
+   * So on touch the thumbnails are DRAWN at T.C.UI_THUMB_TOUCH_SCALE — 1.5,
+   * which is what 56 / (44 * 0.857) rounds up to on the half-step the ship
+   * maps demand (they are rasterized at SCALE 2, so only multiples of 0.5 give
+   * whole device pixels per source pixel; the same reason ghostScale is 1.5
+   * and not 1.4). 44x34 becomes 66x51 inside an 81x66 box, which lands at
+   * 69x57 CSS px — over the floor on its own, before touch.js pads anything.
+   *
+   * THE PANEL WAS ALREADY FULL, so this is a re-solve and not a magnification.
+   * The variant row grows 22px and the roster strip 12, and both are paid for
+   * ABOVE them rather than by letting anything collide: the preview steps from
+   * 3.0 to 2.5 (110x85 — still the biggest thing on the screen, and still a
+   * half-step), the pedestal follows it up, and the six rows between the
+   * variant name and the meters each give back one to three px. The panel band
+   * (72 -> 538), the mode block, both hint rows and the controller hint are
+   * exactly where they were, so nothing outside this panel moves and the
+   * screen below it is untouched.
+   *
+   * The vertical stack this solves to, top to bottom, with the clearance to
+   * the row above in brackets:
+   *
+   *     blurb        116.5 - 127.5
+   *     preview      132.5 - 227.5   (5)   180 +/- 42.5, plus the 5px bob
+   *     pedestal     217.0 - 235.0
+   *     variant row  239.0 - 305.0   (4)   272 +/- 33
+   *     variant name 309.0 - 331.0   (4)
+   *     flavour      333.5 - 344.5   (2.5)
+   *     weapon       350.5 - 367.5   (6)
+   *     advantage    373.5 - 384.5   (6)
+   *     drawback     391.5 - 402.5   (7)
+   *     meters       407.0 - 453.0   (4.5) 412 / 430 / 448
+   *     roster strip 461.0 - 513.0   (8)   487 +/- 26
+   *     hint line    522.5 - 533.5   (9.5) inside the 536 border
+   *
+   * THE ROSTER STRIP IS THE ONE THING THAT CANNOT SIMPLY GROW, and it is worth
+   * saying why rather than leaving it looking like an oversight. Ten pips sit
+   * at a 40px pitch across a 444-wide panel; the widest pitch that still fits
+   * ten of them and the boxed one is (444 - 20 - 50) / 9 = 41.6, so there is
+   * no room to spread them. The pips themselves go to UI_THUMB_TOUCH_SCALE —
+   * 22 wide becomes 33, leaving a 7px gap — and the LIT one stays at
+   * stripScale 2, because 2 * 1.5 = 3 would be 66 wide and would overlap its
+   * neighbours by 4px. That is T.C's own conclusion: drawing these bigger buys
+   * legibility, not hit area, and the hit area comes from the padded rect.
+   * ---------------------------------------------------------------------- */
+
+  /** A copy of `base` with every key of `over` written over it. */
+  function relayout(base, over) {
+    const out = {};
+    for (const k in base) out[k] = base[k];
+    for (const k in over) out[k] = over[k];
+    return out;
+  }
+
+  /** The magnification a thumb-sized thumbnail is drawn at. */
+  function thumbScale() {
+    const k = C.UI_THUMB_TOUCH_SCALE;
+    return (typeof k === 'number' && isFinite(k) && k > 0) ? k : 1;
+  }
+
+  /* THE BOX FOLLOWS THE SHIP, rather than being written down beside it.
+   *
+   * T.C.UI_THUMB_TOUCH_SCALE is in T.C so it can be RETUNED there (SPEC-TOUCHUI
+   * §4 puts it there for exactly that reason), and the box has to be whatever
+   * the magnified ship needs. Written as literals, the two drift the moment
+   * anyone touches the constant: at 2 the art is 88x68 inside an 81x66 box, so
+   * the thumbnail overflows its own published hit region — the drawn target and
+   * the tappable one stop being the same rectangle, which is the bug this whole
+   * section exists to fix — and the three sit 1px apart.
+   *
+   * VAR_PAD is the margin of box around the ship (7.5px a side, which is what
+   * leaves the tick room in the corner), VAR_GAP the space between two boxes and
+   * VAR_ARROW_GAP the clear air between the outer box and the pulsing arrow. At
+   * the shipped 1.5 these resolve to exactly the numbers they replace — 81x66
+   * boxes on an 89px pitch with the arrows at 148 — and at any other value the
+   * row still holds together. */
+  const VAR_PAD = 15;
+  const VAR_GAP = 8;
+  const VAR_ARROW_GAP = 18.5;
+  const VAR_BOX_W = Math.round(C.SHIP_W * thumbScale()) + VAR_PAD;   // 81 at 1.5
+  const VAR_BOX_H = Math.round(C.SHIP_H * thumbScale()) + VAR_PAD;   // 66 at 1.5
+
+  /* The roster pip's magnification, stepped back to whole halves until a pip
+   * fits its 40px cell with air either side. The life icons are 22x17 maps and
+   * the strip's pitch is fixed by the panel width (T.C works the arithmetic),
+   * so past a point drawing them bigger only makes neighbours overlap — 1.5
+   * leaves a 7px gap, 2 would be 44 wide in a 40px cell. Hit area comes from
+   * the padded rect either way, so shrinking here costs nothing but ragging. */
+  function stripScaleFor(cell) {
+    let k = thumbScale();
+    while (k > 1 && 22 * k > cell - 6) k -= 0.5;
+    return k > 1 ? k : 1;
+  }
+
+  const SEL_TOUCH = relayout(SEL, {
+    previewY: 180,
+    previewScale: 2.5,
+    pedestalDY: 46,
+    chevronBoxW: 60,
+    chevronBoxH: 76,
+
+    varRowY: 272,
+    varCell: VAR_BOX_W + VAR_GAP,       // 89 at 1.5: 81px boxes, 8px between
+    varBoxW: VAR_BOX_W,
+    varBoxH: VAR_BOX_H,
+    varThumbScale: thumbScale(),
+    // outside the 259px the three boxes span, at 1.5
+    varArrowX: VAR_BOX_W + VAR_GAP + VAR_BOX_W / 2 + VAR_ARROW_GAP,
+    varArrowSize: 9,
+    varArrowDY: 15,
+    varNameY: 320,
+    varFlavourY: 339,
+
+    weaponY: 359,
+    advY: 379,
+    drawY: 397,
+
+    barY: 412,
+    barStep: 18,
+
+    stripY: 487,
+    // 46, not the desktop 50, and the 4px matters. The pips either side of the
+    // lit one are now 33 wide rather than 22 (stripIconScale), so a neighbour's
+    // right edge sits 23.5px from the lit pip's centre; a 50-wide box would
+    // reach 25 and clip it. 46 stops at 23 — clear of the neighbour, and still
+    // a 1px frame around the 44-wide lit icon.
+    stripBoxW: 46,
+    stripBoxH: 52,
+    stripIconScale: stripScaleFor(SEL.stripCell),
+
+    hintY: 528
+  });
+
+  /* WHICH OF THE TWO IS IN FORCE, for the frame being drawn.
+   *
+   * Derived, never state: renderSelect sets it from T.Touch.isTouch() before
+   * it draws anything and every helper below reads it, so a machine with no
+   * touch layer draws from SEL and is byte-for-byte the screen it always was.
+   * It lives up here rather than being threaded through eight signatures
+   * because it is one answer to one question, asked once a frame. */
+  let LAY = SEL;
 
   /**
    * One SPEED / SPREAD / REACH meter. `frac` is the roster-derived 0..1 from
@@ -2045,29 +2479,29 @@
    * cells with one.
    */
   function statBar(ctx, label, frac, cx, y, color) {
-    const blockW = SEL.barLabelW + SEL.barGap + SEL.barW;
+    const blockW = LAY.barLabelW + LAY.barGap + LAY.barW;
     const x0 = Math.round(cx - blockW / 2);
 
-    drawText(ctx, label, x0 + SEL.barLabelW, y, {
+    drawText(ctx, label, x0 + LAY.barLabelW, y, {
       size: 10, color: PAL.uiDim, align: 'right'
     });
 
-    const bx = x0 + SEL.barLabelW + SEL.barGap;
-    const by = Math.round(y - SEL.barH / 2);
-    const cell = SEL.barW / SEL.barCells;
+    const bx = x0 + LAY.barLabelW + LAY.barGap;
+    const by = Math.round(y - LAY.barH / 2);
+    const cell = LAY.barW / LAY.barCells;
     // A non-zero stat always lights at least one cell, so "small" never reads
     // as "none at all".
-    const lit = frac > 0 ? Math.max(1, Math.round(frac * SEL.barCells)) : 0;
+    const lit = frac > 0 ? Math.max(1, Math.round(frac * LAY.barCells)) : 0;
 
     // Empty cells are the SAME colour at a low alpha rather than a black
     // track: over the night sky an unlit cell has to still be visible, or a
     // 6-of-10 meter reads as a short bar with nothing to compare it against.
     ctx.save();
     ctx.fillStyle = color;
-    for (let i = 0; i < SEL.barCells; i++) {
-      ctx.globalAlpha = i < lit ? 1 : SEL.barEmpty;
+    for (let i = 0; i < LAY.barCells; i++) {
+      ctx.globalAlpha = i < lit ? 1 : LAY.barEmpty;
       ctx.fillRect(Math.round(bx + i * cell), by,
-                   Math.max(1, Math.round(cell) - 2), SEL.barH);
+                   Math.max(1, Math.round(cell) - 2), LAY.barH);
     }
     ctx.restore();
   }
@@ -2082,35 +2516,58 @@
    * the strip walks the VISIBLE roster, so a locked burrito leaves no pip, no
    * gap and no hint that a tenth pip is coming (SPEC-BURRITO.md §2). `index`
    * is a position in that same visible list.
+   *
+   * TAPPABLE (SPEC-TOUCHUI §3): each pip publishes a region that jumps
+   * straight to that character. `value` is the position in the VISIBLE roster,
+   * which is the same list game.js's uiTap indexes — so while burrito is
+   * locked he is not in it and no index can name him, and the pips and the
+   * regions can never disagree about which pip is which character.
+   *
+   * The regions TILE the strip: each is exactly one cell wide and they share
+   * their edges, because that is the widest a pip's hit area can be without
+   * eating its neighbour's. Ten pips at a 40px pitch is what a 444-wide panel
+   * holds and there is no spreading them (T.C.UI_THUMB_TOUCH_SCALE's note
+   * works the arithmetic); what makes them reachable is the padding touch.js
+   * applies on the axis that has room — the vertical one.
    */
-  function rosterStrip(ctx, cx, y, index, color, tintCol, vi) {
+  function rosterStrip(ctx, cx, y, index, color, tintCol, vi, slot) {
     const list = visibleRoster();
     const n = list.length;
     if (n === 0) return;
-    const x0 = cx - (n - 1) * SEL.stripCell / 2;
+    const x0 = cx - (n - 1) * LAY.stripCell / 2;
+    const regY = y - LAY.stripBoxH / 2;
 
     for (let i = 0; i < n; i++) {
       const e = list[i];
-      const ix = Math.round(x0 + i * SEL.stripCell);
+      const ix = Math.round(x0 + i * LAY.stripCell);
       const on = i === index;
 
+      pushRegion(idFor(ID_CHAR[slot === 1 ? 1 : 0], i),
+                 ix - LAY.stripCell / 2, regY, LAY.stripCell, LAY.stripBoxH,
+                 slot, 'char', i);
+
       if (on) {
-        const bx = ix - SEL.stripBoxW / 2;
-        const by = y - SEL.stripBoxH / 2;
+        const bx = ix - LAY.stripBoxW / 2;
+        const by = y - LAY.stripBoxH / 2;
         ctx.save();
         ctx.globalAlpha = 0.18;
         ctx.fillStyle = color;
-        ctx.fillRect(bx, by, SEL.stripBoxW, SEL.stripBoxH);
+        ctx.fillRect(bx, by, LAY.stripBoxW, LAY.stripBoxH);
         ctx.globalAlpha = 0.9;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
-        ctx.strokeRect(bx, by, SEL.stripBoxW, SEL.stripBoxH);
+        ctx.strokeRect(bx, by, LAY.stripBoxW, LAY.stripBoxH);
         ctx.restore();
       }
 
       ctx.save();
-      ctx.globalAlpha = on ? 1 : SEL.stripDim;
-      const k = on ? SEL.stripScale : 1;
+      ctx.globalAlpha = on ? 1 : LAY.stripDim;
+      // The lit pip keeps stripScale in both layouts: 2 is already the widest
+      // that clears its neighbours in a 40px cell, and 2 * the touch scale
+      // would be 66 wide and would sit on top of them. The eight you are NOT
+      // on are what the touch layout magnifies (LAY.stripIconScale), which
+      // buys legibility on the glass and, as T.C says, no hit area at all.
+      const k = on ? LAY.stripScale : LAY.stripIconScale;
       // The lit pip wears the chosen VARIANT's palette; the other eight are
       // characters you have not picked a variant of yet, so they stay default.
       const life = on ? variantSprite(e.life, vi) : e.life;
@@ -2137,38 +2594,66 @@
    * big preview is: their entire job is to show three palettes side by side,
    * and a tint over them would be arguing with the thing they exist to say.
    * The box around the current one carries the player colour instead.
+   *
+   * TAPPABLE, AND THIS ONE IS THE REPORTED BUG (SPEC-TOUCHUI §3). Each
+   * thumbnail publishes its own box with `value` = ITS OWN INDEX, so tapping
+   * the third one is variant 2, from wherever you were, first time — game.js
+   * sets the index it is handed and never steps toward it. START keeps
+   * cycling, for anyone on a pad; this adds a way in, it removes none.
+   *
+   * SELECTED, NOT MERELY HIGHLIGHTED (§5). There is no hover on a touchscreen,
+   * so a marking that reads as "focused" says nothing: on the glass the
+   * current thumbnail gets a brighter wash, a heavier 3px box, and a TICK
+   * struck into its top-right corner — a mark that means chosen, not a mark
+   * that means the cursor is here. The desktop marking is left exactly as it
+   * was, wash and 2px box: a mouse HAS a hover, and this screen has shipped.
    */
-  function variantPicker(ctx, cx, y, info, vi, col, t, hint) {
+  function variantPicker(ctx, cx, y, info, vi, col, t, hint, slot) {
     const list = info.variants;
     const n = list ? list.length : 0;
     if (n === 0) return;
 
-    const x0 = cx - (n - 1) * SEL.varCell / 2;
+    const glass = LAY === SEL_TOUCH;
+    const p = slot === 1 ? 1 : 0;
+    const x0 = cx - (n - 1) * LAY.varCell / 2;
     for (let i = 0; i < n; i++) {
-      const ix = Math.round(x0 + i * SEL.varCell);
+      const ix = Math.round(x0 + i * LAY.varCell);
       const on = i === vi;
+      const bx = Math.round(ix - LAY.varBoxW / 2);
+      const by = Math.round(y - LAY.varBoxH / 2);
+
+      pushRegion(idFor(ID_VAR[p], i), bx, by, LAY.varBoxW, LAY.varBoxH,
+                 p, 'variant', i);
 
       if (on) {
-        const bx = Math.round(ix - SEL.varBoxW / 2);
-        const by = Math.round(y - SEL.varBoxH / 2);
         ctx.save();
-        ctx.globalAlpha = 0.18;
+        ctx.globalAlpha = glass ? 0.26 : 0.18;
         ctx.fillStyle = col;
-        ctx.fillRect(bx, by, SEL.varBoxW, SEL.varBoxH);
+        ctx.fillRect(bx, by, LAY.varBoxW, LAY.varBoxH);
         ctx.globalAlpha = 0.9;
         ctx.strokeStyle = col;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(bx, by, SEL.varBoxW, SEL.varBoxH);
+        ctx.lineWidth = glass ? 3 : 2;
+        ctx.strokeRect(bx, by, LAY.varBoxW, LAY.varBoxH);
         ctx.restore();
       }
 
       ctx.save();
-      ctx.globalAlpha = on ? 1 : SEL.varDim;
+      ctx.globalAlpha = on ? 1 : LAY.varDim;
       const name = variantSprite(info.sprite, i);
-      if (!name || !blitCentered(ctx, name, ix, y, 1)) {
-        previewFallback(ctx, ix, y, C.SHIP_W, C.SHIP_H, list[i].color);
+      const k = LAY.varThumbScale;
+      if (!name || !blitCentered(ctx, name, ix, y, k)) {
+        previewFallback(ctx, ix, y, C.SHIP_W * k, C.SHIP_H * k, list[i].color);
       }
       ctx.restore();
+
+      // The tick goes ON TOP of the art, in the box's top-right corner, and
+      // only on the glass. Over the thumbnail rather than beside it because
+      // the box has 7px of margin round a 66x51 ship and no room for a badge
+      // of its own — and because a mark that sits ON the thing it marks cannot
+      // be read as belonging to its neighbour.
+      if (on && glass) {
+        selectedTick(ctx, bx + LAY.varBoxW - 21, by + 5, 16, col);
+      }
     }
 
     /* The affordance, pulsing, on both sides of the row — and it has to match
@@ -2183,12 +2668,12 @@
     const a = pulse(t * 1.0, 4.0, 0.35, 1);
     const upDown = namesUpDown(hint);
     for (let s = -1; s <= 1; s += 2) {
-      const ax = cx + s * SEL.varArrowX;
+      const ax = cx + s * LAY.varArrowX;
       if (upDown) {
-        triangle(ctx, ax, y - SEL.varArrowDY, SEL.varArrowSize, -1, col, a);
-        triangle(ctx, ax, y + SEL.varArrowDY, SEL.varArrowSize, 1, col, a);
+        triangle(ctx, ax, y - LAY.varArrowDY, LAY.varArrowSize, -1, col, a);
+        triangle(ctx, ax, y + LAY.varArrowDY, LAY.varArrowSize, 1, col, a);
       } else {
-        chevron(ctx, ax, y, SEL.varArrowSize + 2, 1, col, a);
+        chevron(ctx, ax, y, LAY.varArrowSize + 2, 1, col, a);
       }
     }
   }
@@ -2300,41 +2785,41 @@
    * always did: with no cycle the block is the same two pieces it was.
    */
   function weaponLine(ctx, cx, y, info) {
-    const labelW = textWidth(ctx, 'WEAPON', { size: SEL.weaponLabelSize });
+    const labelW = textWidth(ctx, 'WEAPON', { size: LAY.weaponLabelSize });
     const nameW = textWidth(ctx, info.weapon,
-                            { size: SEL.weaponSize, bold: true });
+                            { size: LAY.weaponSize, bold: true });
 
     const n = (info.mech === 'cycle')
       ? fillCycleSegs(cycleForKind(info.key)) : 0;
 
     // Fit the cycle to the panel rather than to a hope: measure, and step the
     // size down until it is inside the panel's clear width.
-    let size = SEL.cycleSize;
+    let size = LAY.cycleSize;
     let cycW = 0;
     if (n > 0) {
-      const room = SEL.panelW - SEL.cyclePad * 2 -
-                   labelW - SEL.weaponGap - nameW - SEL.cycleGap;
-      cycW = cycleRowWidth(ctx, n, size, SEL.cycleSepW);
-      while (cycW > room && size > SEL.cycleMinSize) {
+      const room = LAY.panelW - LAY.cyclePad * 2 -
+                   labelW - LAY.weaponGap - nameW - LAY.cycleGap;
+      cycW = cycleRowWidth(ctx, n, size, LAY.cycleSepW);
+      while (cycW > room && size > LAY.cycleMinSize) {
         size -= 1;
-        cycW = cycleRowWidth(ctx, n, size, SEL.cycleSepW);
+        cycW = cycleRowWidth(ctx, n, size, LAY.cycleSepW);
       }
     }
 
-    const total = labelW + SEL.weaponGap + nameW +
-                  (n > 0 ? SEL.cycleGap + cycW : 0);
+    const total = labelW + LAY.weaponGap + nameW +
+                  (n > 0 ? LAY.cycleGap + cycW : 0);
     const x0 = cx - total / 2;
 
     drawText(ctx, 'WEAPON', x0, y, {
-      size: SEL.weaponLabelSize, color: PAL.uiDim, align: 'left'
+      size: LAY.weaponLabelSize, color: PAL.uiDim, align: 'left'
     });
-    drawText(ctx, info.weapon, x0 + labelW + SEL.weaponGap, y, {
-      size: SEL.weaponSize, color: PAL.butter, align: 'left',
+    drawText(ctx, info.weapon, x0 + labelW + LAY.weaponGap, y, {
+      size: LAY.weaponSize, color: PAL.butter, align: 'left',
       bold: true, glow: 12
     });
     if (n > 0) {
-      drawCycleRow(ctx, x0 + labelW + SEL.weaponGap + nameW + SEL.cycleGap, y,
-                   n, size, SEL.cycleSepW, SEL.cycleSepSize, -1, 1, 1, 0);
+      drawCycleRow(ctx, x0 + labelW + LAY.weaponGap + nameW + LAY.cycleGap, y,
+                   n, size, LAY.cycleSepW, LAY.cycleSepSize, -1, 1, 1, 0);
     }
   }
 
@@ -2344,25 +2829,35 @@
    * On touch the second player's way in is their own P2 target, NOT START —
    * with one player joined the layout is solo and both columns' STARTs are
    * P1's — so the panel names the thing that will actually let them in.
+   *
+   * And now the panel ITSELF is the target (SPEC-TOUCHUI §3): the whole open
+   * slot, inside its border, joins that player. One region rather than a
+   * rectangle round the blinking word, because the panel is what the prompt is
+   * pointing at and a thumb aimed at a two-line prompt lands anywhere in it.
+   * The P2 button on the glass keeps working exactly as it does today.
    */
-  function openSlotPanel(ctx, cx, slot, col, t) {
+  function openSlotPanel(ctx, cx, x, slot, col, t) {
+    pushRegion(ID_JOIN[slot === 1 ? 1 : 0],
+               x + 8, LAY.panelY + 8, LAY.panelW - 16, LAY.panelH - 16,
+               slot, 'join', null);
+
     const press = touchOn() ? ('TAP ' + joinButtonName(slot)) : 'PRESS START';
-    drawText(ctx, 'SLOT OPEN', cx, SEL.openY, {
+    drawText(ctx, 'SLOT OPEN', cx, LAY.openY, {
       size: 20, color: PAL.uiDim, align: 'center'
     });
     const blink = (t % 1.0) < 0.6;
     if (blink) {
-      drawText(ctx, press, cx, SEL.openPressY, {
+      drawText(ctx, press, cx, LAY.openPressY, {
         size: 24, color: col, align: 'center', bold: true, glow: 16
       });
-      drawText(ctx, 'TO JOIN', cx, SEL.openJoinY, {
+      drawText(ctx, 'TO JOIN', cx, LAY.openJoinY, {
         size: 18, color: col, align: 'center'
       });
     }
     // §10 asks for this prompt by name; the slot number must track the panel
     // it is drawn in, not be hardcoded to P2.
     drawText(ctx, 'PLAYER ' + (slot + 1) + ' — ' + press + ' TO JOIN', cx,
-      SEL.openPromptY, { size: 11, color: PAL.uiDim, align: 'center' });
+      LAY.openPromptY, { size: 11, color: PAL.uiDim, align: 'center' });
   }
 
   /**
@@ -2375,9 +2870,9 @@
    * it verbatim, exactly as it always did.
    */
   function selectPanel(ctx, x, slot, entry, t, varHint) {
-    const w = SEL.panelW;
-    const y = SEL.panelY;
-    const h = SEL.panelH;
+    const w = LAY.panelW;
+    const y = LAY.panelY;
+    const h = LAY.panelH;
     const cx = x + w / 2;
     const col = slotColor(slot);
     const info = charInfo(entry.kind);
@@ -2401,14 +2896,14 @@
     });
 
     if (!joined) {
-      openSlotPanel(ctx, cx, slot, col, t);
+      openSlotPanel(ctx, cx, x, slot, col, t);
       return;
     }
 
-    drawText(ctx, info.name, cx, SEL.nameY, {
+    drawText(ctx, info.name, cx, LAY.nameY, {
       size: 26, color: info.color, align: 'center', bold: true, glow: 14
     });
-    drawText(ctx, info.blurb, cx, SEL.blurbY, {
+    drawText(ctx, info.blurb, cx, LAY.blurbY, {
       size: 11, color: PAL.uiDim, align: 'center'
     });
 
@@ -2417,7 +2912,7 @@
     ctx.globalAlpha = 0.28;
     ctx.fillStyle = col;
     ctx.beginPath();
-    ctx.ellipse(cx, SEL.previewY + SEL.pedestalDY, 84, 9, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, LAY.previewY + LAY.pedestalDY, 84, 9, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
@@ -2433,14 +2928,14 @@
       const prev = vis[(here - 1 + n) % n];
       const next = vis[(here + 1) % n];
       ctx.save();
-      ctx.globalAlpha = SEL.ghostAlpha;
+      ctx.globalAlpha = LAY.ghostAlpha;
       if (prev.sprite) {
-        blitTinted(ctx, prev.sprite, cx - SEL.ghostX, SEL.previewY,
-                   SEL.ghostScale, tintCol);
+        blitTinted(ctx, prev.sprite, cx - LAY.ghostX, LAY.previewY,
+                   LAY.ghostScale, tintCol);
       }
       if (next.sprite) {
-        blitTinted(ctx, next.sprite, cx + SEL.ghostX, SEL.previewY,
-                   SEL.ghostScale, tintCol);
+        blitTinted(ctx, next.sprite, cx + LAY.ghostX, LAY.previewY,
+                   LAY.ghostScale, tintCol);
       }
       ctx.restore();
     }
@@ -2452,54 +2947,76 @@
     const flick = ((t + slot * 0.7) % 2.6) < 0.13;
     const baseName = (flick && info.spriteFire) ? info.spriteFire : info.sprite;
     const spriteName = variantSprite(baseName, vi);
-    const k = SEL.previewScale;
-    if (!spriteName || !blitTinted(ctx, spriteName, cx, SEL.previewY + bob, k, tintCol)) {
-      previewFallback(ctx, cx, SEL.previewY + bob,
+    const k = LAY.previewScale;
+    if (!spriteName || !blitTinted(ctx, spriteName, cx, LAY.previewY + bob, k, tintCol)) {
+      previewFallback(ctx, cx, LAY.previewY + bob,
                       C.SHIP_W * k, C.SHIP_H * k, variant ? variant.color : info.color);
     }
 
-    // browse hints, only meaningful while the pick is unlocked
+    /* THE BIG PREVIEW READIES THIS PLAYER UP (SPEC-TOUCHUI §3). Published at
+     * the sprite's own footprint, undisturbed by the bob — a target that moved
+     * 5px up and down at 2.2 rad/s would be a target you chase — and it is the
+     * largest thing on the panel by a distance, so it needs no help from the
+     * padding to clear the 56px floor. */
+    pushRegion(ID_READY[slot === 1 ? 1 : 0],
+               cx - C.SHIP_W * k / 2, LAY.previewY - C.SHIP_H * k / 2,
+               C.SHIP_W * k, C.SHIP_H * k, slot, 'ready', null);
+
+    // browse hints, only meaningful while the pick is unlocked — and, since
+    // SPEC-TOUCHUI §3, tappable: one step along the carousel each, the same
+    // wrap the D-pad gets. Published only while they are DRAWN, so a locked-in
+    // panel offers nothing a locked-in panel does not answer. The box is wider
+    // and taller than the 16px chevron inside it because a thumb aimed at an
+    // arrow lands near it, not on it; touch.js grows whatever is left.
     if (!entry.ready) {
       const a = pulse(t * 1.0, 4.0, 0.35, 1);
-      chevron(ctx, cx - SEL.chevronX, SEL.previewY, 16, -1, col, a);
-      chevron(ctx, cx + SEL.chevronX, SEL.previewY, 16, 1, col, a);
+      chevron(ctx, cx - LAY.chevronX, LAY.previewY, 16, -1, col, a);
+      chevron(ctx, cx + LAY.chevronX, LAY.previewY, 16, 1, col, a);
+
+      const cw = LAY.chevronBoxW;
+      const ch = LAY.chevronBoxH;
+      const p = slot === 1 ? 1 : 0;
+      pushRegion(ID_PREV[p], cx - LAY.chevronX - cw / 2, LAY.previewY - ch / 2,
+                 cw, ch, slot, 'charStep', -1);
+      pushRegion(ID_NEXT[p], cx + LAY.chevronX - cw / 2, LAY.previewY - ch / 2,
+                 cw, ch, slot, 'charStep', 1);
     }
 
     // The variant row, then the variant's NAME and its flavour line. The name
     // is the loudest thing under the preview on purpose: it is the identity
     // the player is choosing, and the one the HUD chip will print all game.
-    variantPicker(ctx, cx, SEL.varRowY, info, vi, col, t,
-                  entry.ready ? '' : varHint);
+    variantPicker(ctx, cx, LAY.varRowY, info, vi, col, t,
+                  entry.ready ? '' : varHint, slot);
     if (variant) {
       const nameCol = legible(variant.color);
-      drawText(ctx, variant.name, cx, SEL.varNameY, {
+      drawText(ctx, variant.name, cx, LAY.varNameY, {
         size: 22, color: nameCol, align: 'center', bold: true,
         glow: 14, glowColor: nameCol, shadow: true
       });
-      drawText(ctx, variant.flavour, cx, SEL.varFlavourY, {
+      drawText(ctx, variant.flavour, cx, LAY.varFlavourY, {
         size: 11, color: PAL.uiDim, align: 'center'
       });
     }
 
-    weaponLine(ctx, cx, SEL.weaponY, info);
+    weaponLine(ctx, cx, LAY.weaponY, info);
 
     // THE TRADE, in the roster's own words. Every character is one advantage
     // paired with one drawback, and a player has to be able to read that
     // before committing rather than discover it by dying: this is the whole
     // reason SPEC-CHARACTERS.md keeps the copy in T.C.BASE_WEAPONS.
-    drawText(ctx, '+ ' + info.advantage, cx, SEL.advY, {
+    drawText(ctx, '+ ' + info.advantage, cx, LAY.advY, {
       size: 11, color: PAL.crumb, align: 'center', shadow: true
     });
-    drawText(ctx, '- ' + info.drawback, cx, SEL.drawY, {
+    drawText(ctx, '- ' + info.drawback, cx, LAY.drawY, {
       size: 11, color: PAL.danger, align: 'center', shadow: true
     });
 
     for (let i = 0; i < info.bars.length; i++) {
       statBar(ctx, info.bars[i].label, info.bars[i].frac,
-              cx, SEL.barY + i * SEL.barStep, col);
+              cx, LAY.barY + i * LAY.barStep, col);
     }
 
-    rosterStrip(ctx, cx, SEL.stripY, here, col, tintCol, vi);
+    rosterStrip(ctx, cx, LAY.stripY, here, col, tintCol, vi, slot);
 
     // Where you are in BOTH lists — nine characters across (ten with the
     // secret earned), three variants deep. The COUNT is the visible roster's,
@@ -2521,11 +3038,11 @@
       hint = buttonName('LEFT / RIGHT') + '   ' + pos + '   ·   VARIANT ' + vpos;
     } else hint = buttonName('LEFT / RIGHT') + '   ' + pos;
 
-    drawText(ctx, hint, cx, SEL.hintY, {
+    drawText(ctx, hint, cx, LAY.hintY, {
       size: 11, color: entry.ready ? col : PAL.uiDim, align: 'center'
     });
 
-    if (entry.ready) drawReadyStamp(ctx, cx, SEL.previewY, col, t);
+    if (entry.ready) drawReadyStamp(ctx, cx, LAY.previewY, col, t);
   }
 
   /** The rotated READY stamp slapped over a locked-in character. */
@@ -2560,11 +3077,18 @@
    * of up/down triangles is drawn only while up/down really is what moves
    * this — otherwise the selector shows the live mode and names its own
    * button in the label instead of pointing at the wrong stick.
+   *
+   * TAPPING EITHER WORD PICKS IT DIRECTLY (SPEC-TOUCHUI §3) — it is a pair of
+   * choices, not a toggle, so CO-OP taps to CO-OP whichever one is lit and
+   * tapping the live one is a no-op rather than a flip. The region takes in
+   * the word, the two pulsing ticks either side of it and the arrows above and
+   * below, because all four are part of the same thing to aim at; the two are
+   * 300px apart so neither can ever reach the other.
    */
   function modeSelector(ctx, mode, t, hint) {
     const upDown = namesUpDown(hint);
     drawText(ctx, hint ? '— GAME MODE · ' + hint + ' —' : '— GAME MODE —',
-      C.W / 2, SEL.modeLabelY, {
+      C.W / 2, LAY.modeLabelY, {
         size: 11, color: PAL.uiDim, align: 'center'
       });
 
@@ -2581,22 +3105,26 @@
         ctx.save();
         ctx.globalAlpha = pulse(t, 4.2, 0.5, 0.95);
         ctx.fillStyle = PAL.butter;
-        ctx.fillRect(cx - w / 2 - 26, SEL.modeY - 3, 10, 6);
-        ctx.fillRect(cx + w / 2 + 16, SEL.modeY - 3, 10, 6);
+        ctx.fillRect(cx - w / 2 - 26, LAY.modeY - 3, 10, 6);
+        ctx.fillRect(cx + w / 2 + 16, LAY.modeY - 3, 10, 6);
         ctx.restore();
         if (upDown) {
-          triangle(ctx, cx, SEL.modeY - 20, 6, -1, PAL.butter, pulse(t, 4.2, 0.4, 1));
-          triangle(ctx, cx, SEL.modeY + 20, 6, 1, PAL.butter, pulse(t, 4.2, 0.4, 1));
+          triangle(ctx, cx, LAY.modeY - 20, 6, -1, PAL.butter, pulse(t, 4.2, 0.4, 1));
+          triangle(ctx, cx, LAY.modeY + 20, 6, 1, PAL.butter, pulse(t, 4.2, 0.4, 1));
         }
       }
 
-      drawText(ctx, m.label, cx, SEL.modeY, {
+      drawText(ctx, m.label, cx, LAY.modeY, {
         size: on ? 22 : 18, color: col, align: 'center',
         bold: on, glow: on ? 14 : 0
       });
+
+      pushRegion(ID_MODE[key], cx - w / 2 - LAY.modePadX,
+                 LAY.modeY - LAY.modePadY, w + LAY.modePadX * 2,
+                 LAY.modePadY * 2, null, 'mode', key);
     }
 
-    drawText(ctx, MODES[mode].blurb, C.W / 2, SEL.modeBlurbY, {
+    drawText(ctx, MODES[mode].blurb, C.W / 2, LAY.modeBlurbY, {
       size: 12, color: PAL.ui, align: 'center', alpha: 0.85
     });
   }
@@ -2609,11 +3137,21 @@
   function renderSelect(ctx, g) {
     const t = U.now();
     const st = selectState(g);
+
+    /* WHICH LAYOUT THIS FRAME IS DRAWN IN, decided once, before anything is
+     * measured or placed. On a machine with no touch layer this is SEL and
+     * every pixel below is the screen that shipped; on the glass it is
+     * SEL_TOUCH, whose thumbnails and roster pips are big enough to hit
+     * (SPEC-TOUCHUI §4). Nothing else on this screen reads T.Touch. */
+    LAY = touchOn() ? SEL_TOUCH : SEL;
+
+    beginRegions();
+    noteTapAck(g);
     ctx.save();
 
     dim(ctx, 0.28);
 
-    drawText(ctx, 'SELECT YOUR BREAKFAST', C.W / 2, SEL.headY, {
+    drawText(ctx, 'SELECT YOUR BREAKFAST', C.W / 2, LAY.headY, {
       size: 28, color: PAL.crumb, align: 'center', bold: true,
       glow: 18, glowColor: PAL.butter
     });
@@ -2629,10 +3167,10 @@
     const varHint = buttonName(st.variantHint);
     const modeHint = buttonName(st.modeHint);
 
-    const totalW = SEL.panelW * 2 + SEL.gap;
+    const totalW = LAY.panelW * 2 + LAY.gap;
     const leftX = Math.round((C.W - totalW) / 2);
     selectPanel(ctx, leftX, 0, st.slots[0], t, varHint);
-    selectPanel(ctx, leftX + SEL.panelW + SEL.gap, 1, st.slots[1], t, varHint);
+    selectPanel(ctx, leftX + LAY.panelW + LAY.gap, 1, st.slots[1], t, varHint);
 
     // Remember each player's character AND variant, so the next boot puts them
     // back where they were (SPEC-VARIANTS.md §5). This is the one place in
@@ -2699,7 +3237,7 @@
       HINT_PARTS.splice(dropIdx, 1);
       hints = HINT_PARTS.join('   ');
     }
-    drawText(ctx, hints, C.W / 2, SEL.hintsY, {
+    drawText(ctx, hints, C.W / 2, LAY.hintsY, {
       size: 13, color: PAL.ui, align: 'center', alpha: 0.9
     });
 
@@ -2728,7 +3266,7 @@
         ? ('TAP ' + joinButtonName(openSlot) + ' TO JOIN')
         : (st.variantHint === 'START'
             ? 'START = JOIN THE OPEN SLOT' : 'START = JOIN');
-      drawText(ctx, joinLine, C.W / 2, SEL.hints2Y, {
+      drawText(ctx, joinLine, C.W / 2, LAY.hints2Y, {
         size: blink ? 17 : 14, color: blink ? PAL.butter : PAL.uiDim,
         align: 'center', bold: blink, glow: blink ? 14 : 0
       });
@@ -2736,16 +3274,19 @@
       // One of the two has locked in and we are waiting on the other.
       const waiting = ready > 0 && ready < joined;
       drawText(ctx, waiting ? 'WAITING FOR THE OTHER PLAYER'
-                            : 'READY UP TO BEGIN', C.W / 2, SEL.hints2Y, {
+                            : 'READY UP TO BEGIN', C.W / 2, LAY.hints2Y, {
         size: 14, color: PAL.uiDim, align: 'center'
       });
     }
+
+    // Last, over everything it might be acknowledging (SPEC-TOUCHUI §5).
+    drawTapFlash(ctx);
 
     ctx.restore();
   }
 
   /* =========================================================================
-   * 6. HUD  (the strip above PLAY_TOP)
+   * 7. HUD  (the strip above PLAY_TOP)
    * ====================================================================== */
 
   const HUD = {
@@ -3005,6 +3546,11 @@
 
   function renderHUD(ctx, board, g) {
     const t = U.now();
+    // Nothing on this screen is tappable, and the frame's region list is
+    // cleared anyway: a stale select-screen rectangle left lying under the
+    // play field would be a tap routed to a panel that is not there
+    // (SPEC-TOUCHUI §2).
+    beginRegions();
     const b = currentBoard(g, board);
     const ships = collectShips(g);
     ctx.save();
@@ -3587,11 +4133,16 @@
   }
 
   /* =========================================================================
-   * 7. WAVE BANNER
+   * 8. WAVE BANNER
    * ====================================================================== */
 
   function renderWaveBanner(ctx, g) {
     const t = U.now();
+    // Nothing on this screen is tappable, and the frame's region list is
+    // cleared anyway: a stale select-screen rectangle left lying under the
+    // play field would be a tap routed to a panel that is not there
+    // (SPEC-TOUCHUI §2).
+    beginRegions();
     const b = currentBoard(g, null);
     const wave = (b && typeof b.wave === 'number') ? b.wave : 1;
 
@@ -3639,7 +4190,7 @@
   }
 
   /* =========================================================================
-   * 8. PAUSE
+   * 9. PAUSE
    * ====================================================================== */
 
   /* Layout landmarks for the pause box, all offsets from its top edge.
@@ -3696,6 +4247,11 @@
 
   function renderPause(ctx, g) {
     const t = U.now();
+    // Nothing on this screen is tappable, and the frame's region list is
+    // cleared anyway: a stale select-screen rectangle left lying under the
+    // play field would be a tap routed to a panel that is not there
+    // (SPEC-TOUCHUI §2).
+    beginRegions();
     const confirming = quitConfirmActive(g);
     const glass = touchOn();
     ctx.save();
@@ -3753,11 +4309,16 @@
   }
 
   /* =========================================================================
-   * 9. GAME OVER
+   * 10. GAME OVER
    * ====================================================================== */
 
   function renderOver(ctx, g) {
     const t = U.now();
+    // Nothing on this screen is tappable, and the frame's region list is
+    // cleared anyway: a stale select-screen rectangle left lying under the
+    // play field would be a tap routed to a panel that is not there
+    // (SPEC-TOUCHUI §2).
+    beginRegions();
     const ships = collectShips(g);
     const hi = highScore(g);
 
@@ -3870,7 +4431,7 @@
   }
 
   /* =========================================================================
-   * 10. CONTROLLER HINT
+   * 11. CONTROLLER HINT
    * ====================================================================== */
 
   /**
@@ -3908,7 +4469,7 @@
   }
 
   /* =========================================================================
-   * 11. CRT OVERLAY
+   * 12. CRT OVERLAY
    *
    * Built ONCE into an offscreen canvas (2px dark lines every 4px plus a
    * radial vignette, both baked with their own alpha) and blitted each frame.
@@ -3992,6 +4553,25 @@
     UNLOCK_TIME: REVEAL.time,
     characterList: characterList,
     characterCount: characterCount,
+
+    /* --- tappable canvas UI (SPEC-TOUCHUI.md §2, §4 and §5) --------------
+     * The rectangles this file drew, in logical 960x720 coordinates, for the
+     * frame currently on screen. touch.js converts a tap into those
+     * coordinates, hit-tests the list (last match wins) and hands the winning
+     * region to T.Game.uiTap — which is the only place a region is acted on.
+     * Regions are DATA: read one, do not keep it (they are pooled and the next
+     * frame writes over them), and never expect one to do anything by itself.
+     *
+     * flashRegion lights the tapped-flash on a published id. game.js's own
+     * Game.tapAck already drives it, so nothing has to call this — it is here
+     * for a caller with its own idea of what was tapped, and for a harness
+     * that wants to see the acknowledgement without a touchscreen.
+     */
+    beginRegions: beginRegions,
+    addRegion: addRegion,
+    regions: regions,
+    flashRegion: flashRegion,
+    TAP_FLASH_TIME: TAP_FLASH_TIME,
 
     renderWaveBanner: renderWaveBanner,
     renderPause: renderPause,

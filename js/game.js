@@ -11,6 +11,7 @@
  *   T.Game.render(ctx)
  *   T.Game.state           // 'title'|'select'|'play'|'pause'|'wave'|'over'
  *   T.Game.session         // current Session or null
+ *   T.Game.uiTap(region)   // act on a tapped/clicked T.UI hit region
  *
  * This file NEVER draws text — all screen furniture goes through T.UI, which
  * loads after this file (that is fine: every reference is inside a function and
@@ -2229,6 +2230,69 @@
     setPick(p, p.kind, cycleVariant(p.kind, p.variant, 1));
   }
 
+  /* -------------------------------------------------------------------------
+   * THE FIVE SELECT-SCREEN ACTIONS  (SPEC-TOUCHUI.md §2)
+   *
+   * Joining, readying, choosing a character, choosing a variant and choosing
+   * the game mode are the only things this screen does. There are now TWO ways
+   * to ask for each of them — a button edge (updateSelect, below) and a tap on
+   * the thing itself (uiTap, at the bottom of this file) — so each one is a
+   * function here, called by both, rather than a body in updateSelect and a
+   * parallel copy in uiTap that drifts away from it.
+   *
+   * Each holds the STATE CHANGE and the audio cue and nothing else. Consuming
+   * an input edge is the button path's business — it exists to stop the very
+   * press that joined a player from also readying them up in the same frame,
+   * and a tap has no edge to consume — so those calls stay in updateSelect.
+   * ---------------------------------------------------------------------- */
+
+  /** This seat takes a controller. SPEC-VARIANTS §5: P2 arriving steps aside. */
+  function joinPlayer(sel, p) {
+    p.joined = true;
+    p.ready = false;
+    separateFromP1(sel, p);
+    sfx('uiConfirm');
+  }
+
+  /** Lock this player in. Everyone joined being ready is what starts the game. */
+  function readyPlayer(p) {
+    p.ready = true;
+    sfx('uiConfirm');
+  }
+
+  /**
+   * Put this player on `kind`, keeping their variant.
+   *
+   * ARRIVING somewhere is what separateFromP1 keys off, and browsing the
+   * carousel, tapping a roster icon and tapping a chevron are all arrivals —
+   * so P2 landing on P1's exact version steps one skin along in all three
+   * cases, and in none of them is P1 touched.
+   */
+  function pickCharacter(sel, p, kind) {
+    setPick(p, kind, p.variant);
+    separateFromP1(sel, p);
+    sfx('uiMove');
+  }
+
+  /**
+   * Put this player on variant `variant` of the character they are already on.
+   *
+   * NEVER second-guessed by separateFromP1: this is the player's own choice of
+   * skin, and if they want to be the same jam as P1 they are allowed to be.
+   * The caller decides WHICH variant — START steps to the next one, a tap names
+   * one outright — and this only ever applies it.
+   */
+  function pickVariant(p, variant) {
+    setPick(p, p.kind, variant);
+    sfx('uiMove');
+  }
+
+  /** Set the game mode for BOTH players. §9: co-op or classic, nothing else. */
+  function pickMode(sel, mode) {
+    sel.mode = mode;
+    sfx('uiMove');
+  }
+
   /**
    * A remembered pick for this seat, falling back to its default character.
    *
@@ -2442,12 +2506,23 @@
 
   /* ---------------------------- per-state update ------------------------ */
 
+  /**
+   * Leave the title for the select screen — the one thing the title screen
+   * does, whether it was asked for with START, with a keyboard, or with a tap
+   * anywhere on the canvas (SPEC-TOUCHUI §3).
+   *
+   * The edge is consumed on the way out either way: 'select' reads START too,
+   * and a press that survives this frame would join a player with the same
+   * push that opened the screen.
+   */
+  function startFromTitle() {
+    consumeAll('start');
+    sfx('uiConfirm');
+    enterSelect();
+  }
+
   function updateTitle() {
-    if (anyPressed('start')) {
-      consumeAll('start');
-      sfx('uiConfirm');
-      enterSelect();
-    }
+    if (anyPressed('start')) startFromTitle();
   }
 
   function updateSelect(dt) {
@@ -2462,12 +2537,9 @@
 
       if (!p.joined) {
         if (pd.startPressed || pd.firePressed) {
-          p.joined = true;
-          p.ready = false;
           // SPEC-VARIANTS §5: a player joining onto the other one's exact
           // version steps one skin along, so they can tell each other apart.
-          separateFromP1(sel, p);
-          sfx('uiConfirm');
+          joinPlayer(sel, p);
           if (T.Input && T.Input.consume) {
             T.Input.consume(p.slot, 'start');
             T.Input.consume(p.slot, 'fire');
@@ -2495,8 +2567,7 @@
       // edges are consumed so nothing downstream acts on them either. KeyS /
       // ArrowDown stay a collision-free way to change the mode on a keyboard.
       if (pd.firePressed) {
-        p.ready = true;
-        sfx('uiConfirm');
+        readyPlayer(p);
         if (T.Input && T.Input.consume) {
           T.Input.consume(p.slot, 'fire');
           T.Input.consume(p.slot, 'up');
@@ -2514,11 +2585,9 @@
       if (pd.rightPressed) step += 1;
       if (pd.altCharPressed) step += 1;
       if (step !== 0) {
-        setPick(p, cycleKind(p.kind, step), p.variant);
         // Arriving on P1's character: take the next skin along, so the two
         // ships are never the same colour by accident (SPEC-VARIANTS §5).
-        separateFromP1(sel, p);
-        sfx('uiMove');
+        pickCharacter(sel, p, cycleKind(p.kind, step));
       }
 
       /* SPEC-VARIANTS §5: the variant picker — START steps through this
@@ -2540,17 +2609,20 @@
        * playing can reach the picker. ui.js labels it.
        *
        * This is the player's OWN choice, so it is never second-guessed by the
-       * P2 tie-breaker: if you want to be the same jam as P1, be the same jam. */
+       * P2 tie-breaker: if you want to be the same jam as P1, be the same jam.
+       *
+       * SPEC-TOUCHUI §3: on a touchscreen you tap the thumbnail you want and
+       * get THAT skin, which is the same pickVariant with the index named
+       * outright instead of stepped. START is unchanged for everyone on a pad
+       * or a keyboard — the tap ADDS a way in, it does not take this one away. */
       if (pd.startPressed) {
-        setPick(p, p.kind, cycleVariant(p.kind, p.variant, 1));
-        sfx('uiMove');
+        pickVariant(p, cycleVariant(p.kind, p.variant, 1));
         if (T.Input && T.Input.consume) T.Input.consume(p.slot, 'start');
       }
 
       // Up / down flips the game mode for everyone.
       if (pd.upPressed || pd.downPressed) {
-        sel.mode = sel.mode === 'coop' ? 'classic' : 'coop';
-        sfx('uiMove');
+        pickMode(sel, sel.mode === 'coop' ? 'classic' : 'coop');
       }
       if (pd.backPressed) {
         if (p.slot === 1) {
@@ -2826,6 +2898,165 @@
   }
 
   /* =========================================================================
+   * TAPPED UI REGIONS  (SPEC-TOUCHUI.md §2)
+   *
+   * The select screen is drawn ON the canvas, so nothing inside it can be
+   * hit-tested the way a DOM button can. ui.js publishes the rectangle of
+   * every interactive thing it draws, touch.js turns a tap or a click into
+   * logical canvas coordinates and hit-tests that list, and the region it
+   * finds arrives HERE. This is the only place a tapped region is acted on:
+   * ui.js records geometry and never mutates, touch.js routes and never
+   * decides, and the state change itself is the same function the equivalent
+   * button press runs (see THE FIVE SELECT-SCREEN ACTIONS, above).
+   *
+   * A region is declarative data from another file, so nothing below trusts
+   * it. Every action is validated against the state the game is actually in
+   * and against the roster as it stands right now, and anything that does not
+   * check out is a silent no-op: an unknown action, a null region, an
+   * out-of-range value, a tap from a player slot that is not in the game, a
+   * select-screen action arriving on the title screen. None of them throws,
+   * because a pointer handler is not a place to throw from — an exception
+   * there would take the touch layer down mid-gesture and leave a held
+   * button stuck on.
+   *
+   * WHAT IT MUST NOT DO, because it is the reported bug: 'variant' sets the
+   * index it is handed. It does not step toward it. Tapping the third
+   * thumbnail is variant 2, first time, from wherever you were.
+   * ====================================================================== */
+
+  /** True only for a whole number that indexes an array of length `n`. */
+  function isRegionIndex(v, n) {
+    return typeof v === 'number' && isFinite(v) &&
+           Math.floor(v) === v && v >= 0 && v < n;
+  }
+
+  /** The select-screen player a region names, or null if it names nobody. */
+  function tapPlayer(sel, slot) {
+    if (slot !== 0 && slot !== 1) return null;
+    const players = sel.players;
+    for (let i = 0; i < players.length; i++) {
+      if (players[i].slot === slot) return players[i];
+    }
+    return null;
+  }
+
+  /**
+   * Record that a tap LANDED, for the one frame of feedback SPEC-TOUCHUI §5
+   * asks for: without it a player cannot tell a small target was missed from
+   * the game ignoring them. Presentation only — nothing in this file reads it
+   * back, and the game plays identically whether ui.js draws it or not.
+   *
+   * One small object per tap, which is a human-rate event and not a hot loop.
+   */
+  function ackTap(region) {
+    Game.tapAck = {
+      id: region.id,
+      action: region.action,
+      player: region.player,
+      value: region.value,
+      t: Game.time
+    };
+    return true;
+  }
+
+  /**
+   * Apply one tapped region. Returns true only if the tap LANDED — if it
+   * named a live target on the screen the game is actually on, and was
+   * applied. False is a refusal, and nothing happened at all.
+   *
+   * Landing is not the same as moving: re-tapping the variant you already wear,
+   * the mode already set or the character you are already on is a landed tap
+   * and returns true, because SPEC-TOUCHUI §5 asks for a landed tap to be
+   * acknowledged and a tap on the thing you have is exactly the case where a
+   * silent no-answer reads as a missed target.
+   */
+  function applyUiTap(region) {
+    if (!region || typeof region !== 'object') return false;
+    const action = region.action;
+    if (typeof action !== 'string' || action === '') return false;
+
+    /* The title screen's single region. Tapping anywhere already started the
+     * game; expressing it as a region is what makes that ONE mechanism rather
+     * than two, so it runs the same body START does. */
+    if (action === 'start') {
+      if (Game.state !== 'title') return false;
+      startFromTitle();
+      return ackTap(region);
+    }
+
+    /* Everything else belongs to the select screen and to nowhere else. Note
+     * `Game.select` is non-null on the title screen too — init() primes one —
+     * so the state test is the one that matters, not the payload test. */
+    const sel = Game.select;
+    if (Game.state !== 'select' || !sel || !sel.players) return false;
+
+    // The mode selector belongs to the screen, not to either panel.
+    if (action === 'mode') {
+      const mode = region.value;
+      if (mode !== 'coop' && mode !== 'classic') return false;
+      pickMode(sel, mode);
+      return ackTap(region);
+    }
+
+    const p = tapPlayer(sel, region.player);
+    if (!p) return false;
+
+    if (action === 'join') {
+      if (p.joined) return false;
+      joinPlayer(sel, p);
+      return ackTap(region);
+    }
+
+    /* A seat that has not joined, and a player who has already locked in, are
+     * both out of the running: updateSelect `continue`s past both, so their
+     * panel does not answer a button either. BACK is still how you un-ready,
+     * exactly as it is today. */
+    if (!p.joined || p.ready) return false;
+
+    switch (action) {
+      /* THE REPORTED BUG. `value` is the variant index the player tapped and
+       * it is applied as-is — no cycling, no stepping toward it. Out of range
+       * for the character they are on is a no-op rather than a clamp: a tap
+       * that lands on a thumbnail that is not there did not land on anything. */
+      case 'variant':
+        if (!isRegionIndex(region.value, variantCount(p.kind))) return false;
+        pickVariant(p, region.value);
+        return ackTap(region);
+
+      /* A roster-strip icon: straight to that character. `value` indexes the
+       * VISIBLE order, which is what keeps a locked secret unreachable — he is
+       * not in that array, so no index can name him (SPEC-BURRITO §2). The
+       * isPickable re-check costs nothing and means a stale region drawn on
+       * the frame an unlock changed the order still cannot smuggle him in. */
+      case 'char': {
+        if (!isRegionIndex(region.value, visibleOrder.length)) return false;
+        const kind = visibleOrder[region.value];
+        if (!isPickable(kind)) return false;
+        pickCharacter(sel, p, kind);
+        return ackTap(region);
+      }
+
+      /* A chevron: one place along the carousel, the same wrap the D-pad gets
+       * and through the same visible order, so it cannot step onto a secret. */
+      case 'charStep': {
+        const step = region.value;
+        if (typeof step !== 'number' || !isFinite(step) ||
+            Math.floor(step) !== step || step === 0) return false;
+        pickCharacter(sel, p, cycleKind(p.kind, step));
+        return ackTap(region);
+      }
+
+      // The big preview: lock this player in, exactly as FIRE does.
+      case 'ready':
+        readyPlayer(p);
+        return ackTap(region);
+
+      default:
+        return false;      // an action this build does not know: silently ignored
+    }
+  }
+
+  /* =========================================================================
    * PUBLIC OBJECT
    * ====================================================================== */
   const Game = {
@@ -2839,6 +3070,12 @@
      * the game plays identically whether it is there or not. See startReveal
      * for the field list. */
     reveal: null,
+    /* The last hit region a tap or a click actually landed on, or null
+     * (SPEC-TOUCHUI §5): { id, action, player, value, t }, where `t` is the
+     * Game.time it landed at. Presentation only, and read-only — it is here so
+     * ui.js can flash the thing that was tapped within a frame of the tap, and
+     * nothing in the rulebook reads it back. */
+    tapAck: null,
     quitConfirm: false,
     hiScore: 0,
     time: 0,
@@ -2851,6 +3088,7 @@
       this.board = null;
       this.banner = null;
       this.reveal = null;
+      this.tapAck = null;
       this.quitConfirm = false;
 
       // Ask storage once, at boot, who has already been earned.
@@ -2973,6 +3211,33 @@
      * earned, here or in an earlier session.
      */
     isCharacterUnlocked: function (id) { return isPickable(id); },
+
+    /**
+     * Act on a hit region the player tapped or clicked (SPEC-TOUCHUI.md §2).
+     *
+     * touch.js hit-tests T.UI.regions() and hands the winning region here;
+     * this is the ONLY place a tapped region is acted on, and every action it
+     * takes is the same function the equivalent button press runs.
+     *
+     *   'variant'   value = variant index    -> that variant, DIRECTLY
+     *   'char'      value = index into visibleCharacters()
+     *   'charStep'  value = -1 | +1
+     *   'ready'     value = null
+     *   'join'      value = null
+     *   'mode'      value = 'coop' | 'classic'
+     *   'start'     value = null             (title only)
+     *
+     * Returns true when the tap LANDED — it named a live target on the screen
+     * the game is actually on, and was applied. Landing is not the same as
+     * moving: re-tapping the variant you already wear is a landed tap and
+     * returns true, because §5 wants a landed tap acknowledged. A null region,
+     * an unknown action, an out-of-range value, a player slot that is not in
+     * the game, or an action that makes no sense in the current state returns
+     * false and does nothing at all — never an exception, because this is
+     * called from a pointer handler and throwing there would strand a held
+     * button.
+     */
+    uiTap: function (region) { return applyUiTap(region); },
 
     /* Convenience hooks for main.js (visibilitychange auto-pause, etc). */
     pause: function () { enterPause(); },

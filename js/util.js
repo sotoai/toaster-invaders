@@ -1272,6 +1272,29 @@
     // pathological gesture cannot grow it without bound.
     TOUCH_MAX_POINTERS: 10,
 
+    /* The per-frame reconciliation watchdog (SPEC-TOUCHUI.md §8.3), 1 on and
+     * 0 off. It exists because a stuck FIRE button escaped 518 assertions and
+     * ruins a two-player game in a way no player can diagnose: the live
+     * pointer set is the single source of truth and the virtual pad is
+     * DERIVED from it every frame, so a lost pointerup — what iOS Safari
+     * actually delivers when the element under a finger is hidden, swapped
+     * between columns by the solo/duo switch, or torn out while it holds
+     * setPointerCapture — cannot leave a button held forever.
+     *
+     * A TUNABLE AND NOT A TIMEOUT. There is deliberately no duration here:
+     * the watchdog acts only on facts (a pointer the platform has stopped
+     * reporting, a control whose element is gone, a pointerdown that reports
+     * isPrimary, a touchend whose roster is empty), never on elapsed time or
+     * on silence, because a watchdog that guesses turns a rare stuck button
+     * into constant dropped input, which is worse. So the only thing worth
+     * stating is whether the net is there.
+     *
+     * 0 is the shipped build minus §8.3 — the pointer-id-set bookkeeping in
+     * §8.2 stays either way. It is here so the fuzz harness can bisect
+     * against it and prove the net is load-bearing rather than decorative;
+     * nothing in the game ever writes it. */
+    TOUCH_WATCHDOG: 1,
+
     // DRAG mode (the alternative to BUTTONS, remembered in localStorage): a
     // pointer that lands on a player's half of the canvas steers their ship by
     // its horizontal delta. Lifting after moving less than TAP_MAX_PX counts
@@ -1286,6 +1309,182 @@
     TOUCH_DRAG_SENS: 1.25,
     TOUCH_DRAG_SPLIT: 0.5,
     TOUCH_MODE_DEFAULT: 'buttons',   // 'buttons' | 'drag'
+
+    /* --- tappable UI  (SPEC-TOUCHUI.md §4 and §7) ------------------------
+     * Reported from real iPad play, and both halves of it are the same
+     * complaint: you cannot tap the thing you want.
+     *
+     * The select screen is drawn ON the canvas, and a canvas has no DOM
+     * children, so nothing inside it can be hit-tested the way the thumb-pad
+     * buttons above are. ui.js publishes the rectangle of every interactive
+     * thing it draws, in logical 960x720 coordinates, and touch.js converts a
+     * tap into those coordinates and hit-tests the list. That makes the two
+     * numbers deciding whether a target can actually be HIT belong here rather
+     * than buried in ui.js: one says how big a region has to end up on the
+     * glass, the other says how much bigger the art behind it is drawn to get
+     * there.
+     *
+     * Additive, like the block above. UI_THUMB_TOUCH_SCALE only applies where
+     * T.Touch.isTouch() is true, so desktop rendering is unchanged; the padded
+     * hit rect is computed from the live canvas scale and is the same rect a
+     * mouse click already lands in, so a desktop gains click-to-choose and
+     * loses nothing.
+     */
+
+    /* The floor for a hit region's ON-SCREEN size, CSS px, in both axes. A
+     * region that comes out smaller than this once the canvas scale is applied
+     * is padded until it does (§4.2), splitting the gap with a neighbour
+     * rather than swallowing it.
+     *
+     * The same 56 as TOUCH_MIN_TARGET, and deliberately a SECOND constant
+     * rather than an alias of it, because the two are measured against
+     * different things and are free to move apart: TOUCH_MIN_TARGET sizes a
+     * DOM button that is already in CSS px, this one is the size a rectangle
+     * authored in logical canvas px has to REACH after scaling. A canvas
+     * region has no button edge to aim at, so if either floor ever moves it is
+     * this one — and moving them together is then a decision rather than a
+     * side effect. */
+    UI_REGION_MIN_PX: 56,
+
+    /* How much bigger the variant thumbnails and the roster-strip icons are
+     * drawn when T.Touch.isTouch() is true. Desktop draws at 1, unchanged.
+     *
+     * THE ARITHMETIC, so the next person can check this rather than trust it.
+     * Measured on an 11-inch iPad held landscape, 1194x834 CSS px: with a 15vw
+     * control column reserved down each edge, the canvas letterboxes to 823
+     * CSS px for the 960 logical px of C.W, so
+     *
+     *     canvas scale = 823 / 960 = 0.857 CSS px per logical px
+     *
+     * A variant thumbnail is ui.js's SEL.varBoxW x SEL.varBoxH — 54x44 logical
+     * (a 44x34 ship sprite with a 5px margin). Drawn at 1, that is
+     *
+     *     54 * 0.857 = 46.3 CSS px wide
+     *     44 * 0.857 = 37.7 CSS px tall   <- the binding axis, a third under 56
+     *
+     * which is the reported bug: a target too small to hit reliably. The scale
+     * this constant has to clear is therefore
+     *
+     *     56 / (44 * 0.857) = 1.485
+     *
+     * 1.5 is the next multiple of 0.5 above it, and a multiple of 0.5 is what
+     * it has to be: the ship maps are rasterized at SCALE 2, so only halves
+     * give whole device pixels per source pixel — the same reason ui.js's
+     * SEL.ghostScale is 1.5 and not 1.4. It lands
+     *
+     *     44 * 1.5 = 66 logical -> 66 * 0.857 = 56.6 CSS px   >= 56   ok
+     *     54 * 1.5 = 81 logical -> 81 * 0.857 = 69.4 CSS px   >= 56   ok
+     *
+     * ON A SMALLER IPAD THE DRAW SCALE ALONE STOPS BEING ENOUGH, and that is
+     * not a hole in this number — it is why §4 asks for two things and not
+     * one. An iPad mini (1133x744) reserves 170 px a side, so it fits the
+     * picture at 793/960 = 0.826, where 66 logical is 54.5 CSS px. This
+     * constant gets the ART most of the way there at every supported size and
+     * UI_REGION_MIN_PX's padded rect closes whatever is left.
+     *
+     * The roster strip is the case that proves the point. Its pips sit at a
+     * 40-logical pitch (ten of them across a 444-wide panel), which is 34.3
+     * CSS px on the same iPad — no draw scale can widen that without the strip
+     * running off the panel, so the strip is carried by the padded rect alone.
+     * Drawing an icon bigger there buys legibility, not hit area. */
+    UI_THUMB_TOUCH_SCALE: 1.5,
+
+    /* How long the tapped-flash burns, in seconds (SPEC-TOUCHUI.md §5).
+     *
+     * §5 asks for a tap that LANDS to be visibly acknowledged within one
+     * frame, because without it a player cannot tell a small target was
+     * missed from the game ignoring them — and on a touchscreen there is no
+     * hover to fall back on, so the acknowledgement is the only feedback the
+     * finger gets. game.js records what a tap landed on; ui.js flashes the
+     * rectangle it published for that id, for this long.
+     *
+     * 0.22 s is about thirteen frames at 60 fps: long enough to read as a
+     * deliberate answer rather than a flicker, short enough that a player
+     * tapping through three variants is never waiting on the last flash.
+     *
+     * It is here rather than in ui.js because it is the one number that
+     * decides whether §5 is met, and a feel tunable buried in a renderer is a
+     * feel tunable nobody finds. Presentation only: nothing in the rulebook
+     * reads it and the game plays identically at any value. */
+    UI_TAP_FLASH_TIME: 0.22,
+
+    /* --- lifting the cluster off the corner  (SPEC-TOUCHUI.md §7) --------
+     * Also reported from real iPad play: the on-screen buttons sit slightly
+     * too low. The reference is the iOS version of Minecraft, whose controls
+     * are INSET from the corner rather than flush into it — the cluster floats
+     * a clear margin above the bottom of the screen and a similar margin in
+     * from the side, so a thumb rests on it without curling down into the very
+     * corner of the device or riding the home indicator.
+     *
+     * css/style.css bottom-anchors the column today with only
+     * env(safe-area-inset-bottom) beneath it, which puts the arrows and FIRE
+     * right down on the edge. These numbers raise them. The lift is ON TOP OF
+     * the safe-area inset, never instead of it: the inset is the thing keeping
+     * a control off the home indicator, and spending it as the lift would put
+     * a control straight back on top of one.
+     *
+     * It is a lift, not a relocation — the cluster stays bottom-anchored and
+     * thumb-reachable. And it may never push a control off-screen, so touch.js
+     * shrinks it toward _MIN, and to zero if it comes to that, before anything
+     * is clipped, overflows its column, or drops under TOUCH_MIN_TARGET.
+     *
+     * 0.07 of the viewport HEIGHT, clamped to 24..72 CSS px, over the sizes
+     * that have to work:
+     *
+     *     12.9" iPad  1366x1024   0.07 * 1024 = 71.7   (the MAX, just)
+     *     11"   iPad  1194x 834   0.07 *  834 = 58.4
+     *     10.2" iPad  1080x 810   0.07 *  810 = 56.7
+     *     iPad mini   1133x 744   0.07 *  744 = 52.1
+     *     phone        844x 390   0.07 *  390 = 27.3
+     *
+     * So _MAX is what stops the 13-inch floating the cluster a thumb's length
+     * off the bottom, and _MIN is not reached by the percentage at any
+     * supported landscape size — it is the floor the shrink path aims at on a
+     * phone, where the column's height budget is nearly full already. */
+    TOUCH_COL_LIFT_PCT: 0.07,
+    TOUCH_COL_LIFT_MIN: 24,
+    TOUCH_COL_LIFT_MAX: 72,
+
+    /* The matching horizontal inset from the OUTER screen edge, as a fraction
+     * of the viewport WIDTH — the axis it insets along — clamped with the same
+     * _MIN / _MAX as the lift above.
+     *
+     * WHY IT IS NOT 0.07 TOO, which is the obvious thing to try. The lift is
+     * spent out of the whole screen HEIGHT; this is spent out of ONE COLUMN,
+     * and the column has almost nothing spare. The arrows are `flex: 1 1 0`
+     * across the column's content box and never go under TOUCH_MIN_TARGET, so
+     * that box can never fall below
+     *
+     *     2 * 56 + 10 (--ti-gap) = 122 CSS px
+     *
+     * and what an inset may take is whatever the column holds above that:
+     *
+     *     column  = max(clamp(96, 15vw, 190), 2*56 + 10 + 2*8)
+     *     content = column - 2 * 8 (--ti-cpad)
+     *
+     *     12.9" iPad  1366   column 190.0   content 174.0   spare 52.0
+     *     11"   iPad  1194   column 179.1   content 163.1   spare 41.1
+     *     10.9" iPad  1180   column 177.0   content 161.0   spare 39.0
+     *     iPad mini   1133   column 170.0   content 154.0   spare 32.0
+     *     10.2" iPad  1080   column 162.0   content 146.0   spare 24.0
+     *     phone        844   column 138.0   content 122.0   spare  0.0
+     *
+     * 0.07 of the width would ask for 83.6 px on an 11-inch iPad — clamped to
+     * 72, still 31 px past what that column can spare — so the shrink path
+     * would fire on every device and the constant would never mean what it
+     * says. 0.025 asks for 24..34 px across the whole iPad range, the low end
+     * of the same 24..72 clamp, and fits from the mini up:
+     *
+     *     1366 -> 34.2    1194 -> 29.9    1180 -> 29.5    1133 -> 28.3
+     *     1080 -> 27.0    spare is 24.0, so touch.js shrinks the last 3 px
+     *      844 -> 21.1    raised to the 24 floor by the clamp, then shrunk to
+     *                     nothing by a column with 0 spare — §7's "and to zero
+     *                     if it comes to that"
+     *
+     * Note the 10.2-inch iPad's spare is exactly TOUCH_COL_LIFT_MIN: 24 px is
+     * the entire allowance the smallest supported iPad has, which is what that
+     * floor is set to. */
+    TOUCH_COL_INSET_PCT: 0.025,
 
     // --- player ----------------------------------------------------------
     SHIP_SPEED: 280,       // px/sec at full stick deflection

@@ -65,6 +65,198 @@
   --ti-safe-l: env(safe-area-inset-left, 0px);
   --ti-col-l: calc(var(--ti-col-w) + var(--ti-safe-l));
   --ti-col-r: calc(var(--ti-col-w) + var(--ti-safe-r));
+
+  /* The height the control columns actually get: they are stretched top-to-
+     bottom over #cabinet, which is 100% of a body sized in dvh. Upgraded to
+     100dvh by the @supports block under this rule. */
+  --ti-vh: 100vh;
+
+  /* The two control heights, named here rather than inline on the buttons,
+     because the lift budget below has to add up the SAME numbers the buttons
+     actually render at. Values unchanged — these are the clamps that were
+     written on .ti-touch__btn--fire and .ti-touch__dpad .ti-touch__btn. */
+  --ti-fire-h: clamp(var(--ti-fire), 17vh, 124px);
+  --ti-dpad-h: clamp(var(--ti-target), 11vh, 84px);
+
+  /* -------------------------------------------------------------------------
+   * LIFTING THE CLUSTER OFF THE CORNER  (SPEC-TOUCHUI section 7)
+   *
+   * Reported from real iPad play: the on-screen buttons sit slightly too low.
+   * The reference is the iOS version of Minecraft, whose controls are INSET
+   * FROM THE CORNER rather than flush into it — the cluster floats a clear
+   * margin above the bottom of the screen and a similar margin in from the
+   * side, so a thumb rests on it without curling into the very corner of the
+   * device or riding the home indicator.
+   *
+   * THE NUMBERS ARE NOT WRITTEN HERE. They are T.C.TOUCH_COL_LIFT_PCT /
+   * _MIN / _MAX and T.C.TOUCH_COL_INSET_PCT in js/util.js, and js/touch.js
+   * hands them down as custom properties — on document.documentElement or on
+   * the layer root, either works (see THE LIFT, RESOLVED A SECOND TIME ON THE
+   * LAYER ROOT). CSS cannot read T.C, and a second copy of a tunable in a
+   * stylesheet is a number that goes stale silently, so this file consumes
+   * them and owns none of them:
+   *
+   *   --ti-lift-pct    T.C.TOUCH_COL_LIFT_PCT    unitless fraction of height
+   *   --ti-inset-pct   T.C.TOUCH_COL_INSET_PCT   unitless fraction of width
+   *   --ti-lift-min    T.C.TOUCH_COL_LIFT_MIN    px length, the clamp floor
+   *   --ti-lift-max    T.C.TOUCH_COL_LIFT_MAX    px length, the clamp ceiling
+   *   --ti-lift        optional px length — a measured override that can only
+   *   --ti-inset       ever SHRINK the lift (see the min() below)
+   *
+   * Every one of them has a fallback of 0 here, so a page where js/touch.js
+   * has not set them (it has not run, or it is an older copy) lays out exactly
+   * as it did before this block existed: bottom-anchored on the safe-area
+   * inset alone. There is no half-configured state — if any of the fraction,
+   * the floor or the ceiling is missing the request resolves to 0px.
+   *
+   * The lift is ON TOP OF env(safe-area-inset-bottom), never instead of it:
+   * the inset is the thing keeping a control off the home indicator, and
+   * spending it as the lift would put a control straight back on one.
+   * ---------------------------------------------------------------------- */
+
+  /* What the constants ASK for, recomputed live by the engine on every resize
+     and rotation, so it cannot go stale between one JS layout pass and the
+     next. `--ti-vh` is 100dvh wherever that exists (see below): Safari's
+     sliding toolbar makes 100vh taller than what you can actually see, and a
+     lift measured against a viewport the player cannot see is not a lift. */
+  --ti-lift-req: clamp(var(--ti-lift-min, 0px),
+                       var(--ti-lift-pct, 0) * var(--ti-vh),
+                       var(--ti-lift-max, 0px));
+
+  /* The horizontal twin, spent out of the WIDTH because that is the axis it
+     insets along, and clamped with the same floor and ceiling. */
+  --ti-inset-req: clamp(var(--ti-lift-min, 0px),
+                        var(--ti-inset-pct, 0) * 100vw,
+                        var(--ti-lift-max, 0px));
+
+  /* WHAT THE COLUMN CAN ACTUALLY SPARE — the half of section 7 that says a
+     lift may NEVER push a control off-screen, expressed so the stylesheet
+     degrades on its own instead of trusting a fixed value to fit.
+     --ti-col-need is the height the TALLEST arrangement of a column needs:
+     the P1/P2 tag, the small strip at its worst (three rows: START + BACK,
+     then MODE, then CO-OP/CLASSIC on the select screen), the cluster, the
+     three gaps between them, and the column's own padding and safe insets.
+
+     Deliberately ONE constant budget rather than a per-screen one: the strip
+     grows and shrinks as the game moves between the title, the select screen
+     and a wave, and a lift that tracked it would slide the cluster under the
+     player's thumb every time they started a game. The worst case is the only
+     case that keeps the cluster still. */
+  --ti-meta-rows: 3;      /* START+BACK | MODE | CO-OP — see js/touch.js       */
+  --ti-tag-h: 16px;       /* the duo "P1"/"P2" line; an over-estimate on       */
+                          /* purpose — erring high only shrinks the lift early */
+
+  --ti-col-need: calc(var(--ti-cpad) + var(--ti-safe-t)
+                    + var(--ti-tag-h) + var(--ti-gap)
+                    + var(--ti-meta-rows) * var(--ti-meta)
+                    + (var(--ti-meta-rows) - 1) * var(--ti-mgap)
+                    + var(--ti-gap)
+                    + var(--ti-fire-h) + var(--ti-gap) + var(--ti-dpad-h)
+                    + var(--ti-cpad) + var(--ti-safe-b));
+
+  --ti-col-room: max(0px, var(--ti-vh) - var(--ti-col-need));
+
+  /* Sideways there is a closed form. --ti-col-w is already
+     max(clamp(96px, 15vw, 190px), --ti-col-floor), and --ti-col-floor is
+     exactly the width two 56px arrows, their gap and the column padding
+     physically need — so whatever the column holds ABOVE that floor is the
+     entire allowance an inset may spend, and it is never negative. */
+  --ti-row-room: max(0px, var(--ti-col-w) - var(--ti-col-floor));
+
+  /* The resolved values. min() is the shrink path: as the room runs out the
+     lift follows it down THROUGH --ti-lift-min and to zero, continuously,
+     rather than falling off a cliff — section 7's "shrink toward the minimum,
+     and to zero if it comes to that, before any control is clipped".
+
+     THE REQUEST IS IN THE min() AS WELL AS THE OVERRIDE, and that is the whole
+     point of the override. js/touch.js documents --ti-lift as a ONE-WAY
+     RATCHET ("the stylesheet still takes min() of the override and its own
+     fit, so this can only ever SHRINK the lift", and liftMetrics() reports it
+     as "the CEILING on what is applied"). It computes the number it publishes
+     from window.innerHeight, which in Safari INCLUDES the strip behind the
+     sliding toolbar and is therefore taller than the 100dvh this file resolves
+     --ti-lift-req against. Without --ti-lift-req in the min(), a shrink pass
+     triggered by a HORIZONTAL overflow republishes its unchanged VERTICAL
+     figure — which is bigger than the fit it replaces — and the cluster jumps
+     UP on the very pass that was supposed to lower it. Measured in Chrome
+     before this line existed: request 58.38px, override 61.6px, applied
+     61.6px. Taking the smaller of {override, request, room} is the ratchet the
+     other file promises: an override below the request still applies in full,
+     and one above it is simply ignored. */
+  --ti-lift-fit:  min(var(--ti-lift,  var(--ti-lift-req)),
+                      var(--ti-lift-req),  var(--ti-col-room));
+  --ti-inset-fit: min(var(--ti-inset, var(--ti-inset-req)),
+                      var(--ti-inset-req), var(--ti-row-room));
+}
+
+/* 100dvh where it exists, 100vh everywhere else. Written as an @supports test
+   rather than as two --ti-vh declarations because a custom property stores an
+   unparsed token stream: an engine with no `dvh` would happily KEEP the second
+   declaration and only fail later, when the value is substituted — and a
+   failure there takes the whole padding declaration down to its initial value,
+   which would drop the column's safe-area inset with it. */
+@supports (height: 100dvh) {
+  :root {
+    --ti-vh: 100dvh;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * MAKING THE RESOLVED LIFT READABLE FROM JavaScript
+ *
+ * An UNREGISTERED custom property computes to a token stream, not to a value:
+ * `getComputedStyle(el).getPropertyValue('--ti-lift-fit')` on the block above
+ * hands back the literal text `min(clamp(24px, 0.07 * 100dvh, 72px), ...)`,
+ * never `56.7px`. That is measured, not assumed — and it is a trap, because
+ * js/touch.js publishes T.Touch.liftMetrics() (SPEC-TOUCHUI §7) and a harness
+ * has to assert the applied lift at every supported size. Parsing that string,
+ * or worse `parseFloat`-ing it into 24, is a silent wrong answer.
+ *
+ * Registering the five DERIVED lengths as `<length>` makes the engine compute
+ * them: the same declarations now report as absolute px, so liftMetrics() and
+ * any assertion can just read them. Layout is unaffected — a resolved length
+ * substitutes into the paddings below exactly as the token stream did (this
+ * was verified by measuring every control at every supported size before and
+ * after registering). An engine too old for @property ignores the rules and
+ * keeps today's behaviour, so nothing here is load-bearing.
+ *
+ * ONLY THE OUTPUTS ARE REGISTERED, AND THAT IS DELIBERATE. The four INPUTS
+ * js/touch.js publishes (--ti-lift-pct, --ti-inset-pct, --ti-lift-min,
+ * --ti-lift-max) and the two optional overrides (--ti-lift, --ti-inset) MUST
+ * stay unregistered: the whole degrade-to-zero contract is built on var()
+ * fallbacks, and a registered property is never "unset" — it always carries
+ * its initial-value. Registering --ti-lift would make
+ * `var(--ti-lift, var(--ti-lift-req))` resolve to the 0px initial value and
+ * silently pin the lift at zero on every device. Do not add them here.
+ * ------------------------------------------------------------------------ */
+@property --ti-lift-fit {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --ti-inset-fit {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --ti-col-need {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --ti-col-room {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --ti-row-room {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
 }
 
 *,
@@ -526,6 +718,48 @@ kbd {
 }
 
 /* ---------------------------------------------------------------------------
+ * THE LIFT, RESOLVED A SECOND TIME ON THE LAYER ROOT
+ *
+ * The :root block at the top of this file already resolves --ti-lift-fit and
+ * --ti-inset-fit, which is the right answer when js/touch.js publishes its
+ * properties on document.documentElement.
+ *
+ * But a custom property is substituted on the element that DECLARES it, not
+ * on the element that inherits the result. js/touch.js's DOM contract calls
+ * #touch-controls "the layer root", and if it sets --ti-lift there instead,
+ * the :root declaration cannot see it: the columns would inherit a
+ * --ti-lift-fit that was computed without it, the lift would silently stay at
+ * 0, and nothing would appear in the console to say why.
+ *
+ * So the same four declarations are repeated here, verbatim, on the layer
+ * root. Whichever element js/touch.js writes to, the value is in scope by the
+ * time .ti-touch__col reads --ti-lift-fit:
+ *
+ *   set on :root      — inherited into .ti-touch, recomputed to the same px
+ *   set on .ti-touch  — only this copy can see it, and this is the copy the
+ *                       columns inherit from
+ *
+ * Repeating them costs one extra substitution on one element per resize and
+ * removes a whole class of silent integration failure. Nothing but custom
+ * properties may go in this rule: .ti-touch is `display: none` until the
+ * layer is shown, and a custom property paints nothing on its own, so this
+ * cannot change what a desktop renders.
+ * ------------------------------------------------------------------------ */
+.ti-touch {
+  --ti-lift-req: clamp(var(--ti-lift-min, 0px),
+                       var(--ti-lift-pct, 0) * var(--ti-vh),
+                       var(--ti-lift-max, 0px));
+  --ti-inset-req: clamp(var(--ti-lift-min, 0px),
+                        var(--ti-inset-pct, 0) * 100vw,
+                        var(--ti-lift-max, 0px));
+
+  --ti-lift-fit:  min(var(--ti-lift,  var(--ti-lift-req)),
+                      var(--ti-lift-req),  var(--ti-col-room));
+  --ti-inset-fit: min(var(--ti-inset, var(--ti-inset-req)),
+                      var(--ti-inset-req), var(--ti-row-room));
+}
+
+/* ---------------------------------------------------------------------------
  * The reserved columns. Full height, content bottom-anchored where the thumbs
  * already are, and the whole column is a pointer target — a thumb that lands
  * between two buttons and slides onto one must be tracked from the moment it
@@ -542,23 +776,33 @@ kbd {
   align-items: center;
   gap: var(--ti-gap);
 
+  /* SPEC-TOUCHUI section 7 lives in these two paddings and nowhere else.
+     --ti-lift-fit is ADDED to the safe-area inset, so the cluster floats clear
+     of the bottom edge the way Minecraft's does while the inset still keeps it
+     off the home indicator. It is padding INSIDE a box whose width and edges
+     have not moved, so T.Touch.columnWidth() measures the same column it
+     always did and js/main.js letterboxes the canvas to the same size in the
+     same place — this is a change within the column, nothing else. */
   padding: calc(var(--ti-cpad) + var(--ti-safe-t)) var(--ti-cpad)
-           calc(var(--ti-cpad) + var(--ti-safe-b));
+           calc(var(--ti-cpad) + var(--ti-safe-b) + var(--ti-lift-fit));
 
   pointer-events: auto;
 }
 
+/* The matching inset from the OUTER screen edge — the bezel side only. The
+   inner edge keeps its plain --ti-cpad, because that side faces the play field
+   and is already a column's width away from anything a thumb curls into. */
 .ti-touch__col--left {
   left: 0;
   width: var(--ti-col-l);
-  padding-left: calc(var(--ti-cpad) + var(--ti-safe-l));
+  padding-left: calc(var(--ti-cpad) + var(--ti-safe-l) + var(--ti-inset-fit));
   --ti-accent: var(--p1);
 }
 
 .ti-touch__col--right {
   right: 0;
   width: var(--ti-col-r);
-  padding-right: calc(var(--ti-cpad) + var(--ti-safe-r));
+  padding-right: calc(var(--ti-cpad) + var(--ti-safe-r) + var(--ti-inset-fit));
   --ti-accent: var(--p2);
 }
 
@@ -708,7 +952,7 @@ kbd {
 /* FIRE: the biggest thing on the device, never under 88px (SPEC-TOUCH §2). */
 .ti-touch__btn--fire {
   width: 100%;
-  height: clamp(var(--ti-fire), 17vh, 124px);
+  height: var(--ti-fire-h);
   min-height: var(--ti-fire);
   border-radius: 22px;
   border-color: rgba(255, 216, 94, 0.42);
@@ -738,7 +982,7 @@ kbd {
 .ti-touch__dpad .ti-touch__btn {
   flex: 1 1 0;
   min-width: var(--ti-target);
-  height: clamp(var(--ti-target), 11vh, 84px);
+  height: var(--ti-dpad-h);
   font-size: clamp(20px, 3.4vh, 30px);
   letter-spacing: 0;
   color: var(--ti-accent, var(--ui));
