@@ -2,6 +2,8 @@
 
 **Space Invaders, except the invaders are the After Dark flying toasters and you are breakfast.**
 
+### ▶ [Play it](https://sotoai.github.io/toaster-invaders/)
+
 Fifty-five winged chrome toasters march down the screen. You are a slice of untoasted
 bread, or a jam jar, or a coffee mug, or one of six other things off the breakfast
 table, and you have three lives and one shot on screen at a time to stop them.
@@ -30,10 +32,12 @@ python3 -m http.server 8000
 Anything that serves a directory works — `npx serve`, `php -S`, `ruby -run -e httpd`.
 There is no build step to run first, because there is no build step.
 
-**On the web:** the repo *is* the site. Push it and turn on GitHub Pages (deploy from
-a branch, folder `/`). Every path in the HTML, the CSS and the JS is relative, so it
-works from a project subpath like `https://you.github.io/toaster-invaders/` as well as
-from a domain root. `.nojekyll` at the root stops GitHub running Jekyll over the files.
+**On the web:** it is live at **<https://sotoai.github.io/toaster-invaders/>**.
+
+The repo *is* the site — GitHub Pages serves it from `main`, folder `/`, with no
+build step. Every path in the HTML, the CSS and the JS is relative, so it works from
+a project subpath as well as from a domain root, and `.nojekyll` at the root stops
+GitHub running Jekyll over the files.
 
 ---
 
