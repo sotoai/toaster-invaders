@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+
+  <!-- SPEC-TOUCH section 5. `viewport-fit=cover` lets the page paint into the
+       rounded corners and under the notch — css/style.css then pushes the
+       controls back out with env(safe-area-inset-*). `user-scalable=no` +
+       `maximum-scale=1` stop a two-thumb game from being read as a pinch-zoom,
+       and are also what removes Safari's 300ms tap delay. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Toaster Invaders">
+  <meta name="theme-color" content="#0d0b10">
+  <meta name="color-scheme" content="dark">
+  <title>Toaster Invaders</title>
+  <meta name="description" content="Space Invaders, but the invaders are winged chrome toasters. Pick one of nine breakfast fighters — bread, jam jar, croissant, coffee mug, pepper grinder, honey dipper, cheese wedge, bacon strip or milk carton — each with its own base weapon. Two-player local on Xbox controllers or the keyboard — no downloads, no plugins.">
+
+  <!-- Every path on this page is RELATIVE so the site also works from a GitHub
+       Pages project subpath (SPEC-TOUCH section 6). One leading slash would
+       break the whole deploy. -->
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="apple-touch-icon.png" type="image/png" sizes="180x180">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- The cabinet: screen on top, control panel underneath. On a touch device
+       js/touch.js appends its control layer here as the last child, and
+       js/main.js letterboxes the canvas into the room the columns leave. -->
+  <div id="cabinet">
+
+    <!-- Letterbox area. main.js owns the canvas's pixel size; CSS only centres it. -->
+    <div id="stage">
+      <canvas id="screen" width="960" height="720"></canvas>
+
+      <noscript>
+        <div id="noscript">
+          <p class="noscript-title">Toaster Invaders needs JavaScript</p>
+          <p>The whole game — the art, the sound, the toasters — is generated in your
+             browser at run time. Turn JavaScript on for this page and reload to play.</p>
+        </div>
+      </noscript>
+    </div>
+
+    <!-- The help strip is desktop furniture. On touch it collapses behind the
+         "?" button so it cannot push the canvas up the page (SPEC-TOUCH §5).
+         Checkbox + label rather than script: index.html carries no JavaScript,
+         and a CSS-only toggle cannot get out of step with the game loop.
+         tabindex="-1" keeps it out of the tab order, so a keyboard player can
+         never focus it and have Space toggle help instead of firing.
+
+         It comes FIRST because everything it shows and hides — the "?" itself,
+         the tip below, the strip at the bottom — is a following sibling. -->
+    <input id="help-toggle" class="help-check" type="checkbox" tabindex="-1">
+    <label class="help-btn" for="help-toggle" role="button"
+           aria-label="Show or hide the controls help"></label>
+
+    <!-- iOS Safari only, and only while running in a browser tab: the toolbar
+         eats a third of a phone in landscape, and Add to Home Screen is the fix.
+         Hidden everywhere else by css/style.css — no script decides this. -->
+    <p id="a2hs">
+      <span class="a2hs-key">Tip</span>
+      Tap <em>Share</em> &rarr; <em>Add to Home Screen</em> to play full screen.
+    </p>
+
+    <!-- Control panel: the how-to-play strip, styled as part of the cabinet. -->
+    <footer id="help">
+      <div class="help-cols">
+
+        <section class="help-col">
+          <h2 class="help-title">Xbox Controller</h2>
+          <ul class="map">
+            <li>
+              <span class="k"><kbd>Left Stick</kbd><span class="or">/</span><kbd>D-Pad</kbd></span>
+              <span class="d">Move</span>
+            </li>
+            <li>
+              <span class="k"><kbd>A</kbd><span class="or">/</span><kbd>RT</kbd></span>
+              <span class="d">Fire</span>
+            </li>
+            <li>
+              <span class="k"><kbd>Start</kbd></span>
+              <span class="d">Start &middot; Pause</span>
+            </li>
+            <li>
+              <span class="k"><kbd>Y</kbd></span>
+              <span class="d">Next character</span>
+            </li>
+            <li>
+              <span class="k"><kbd>Left Stick</kbd><span class="or">/</span><kbd>D-Pad</kbd></span>
+              <span class="d">Browse the nine characters</span>
+            </li>
+            <li>
+              <span class="k"><kbd>B</kbd></span>
+              <span class="d">Back out</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="help-col">
+          <h2 class="help-title">Keyboard</h2>
+          <ul class="map">
+            <li>
+              <span class="k tag p1">P1</span>
+              <span class="d">
+                <kbd>A</kbd><kbd>D</kbd> move &middot;
+                <kbd>Space</kbd><span class="or">/</span><kbd>W</kbd> fire &middot;
+                <kbd>Enter</kbd> start &middot;
+                <kbd>Esc</kbd> back
+              </span>
+            </li>
+            <li>
+              <span class="k tag p2">P2</span>
+              <span class="d">
+                <kbd>&#8592;</kbd><kbd>&#8594;</kbd> move &middot;
+                <kbd>&#8593;</kbd><span class="or">/</span><kbd>/</kbd> fire &middot;
+                <kbd>R-Shift</kbd> start &middot;
+                <kbd>Backspace</kbd> back
+              </span>
+            </li>
+            <li>
+              <span class="k tag">Mode</span>
+              <span class="d">Co-op shares one board &middot; Classic alternates turns</span>
+            </li>
+            <li>
+              <span class="k tag">Characters</span>
+              <span class="d">Nine to pick from &middot; left/right browses &middot; each has one advantage and one drawback</span>
+            </li>
+            <li>
+              <span class="k tag">Weapons</span>
+              <span class="d">Shoot the flying utensil drawer &middot; catch the token it drops &middot; get a weapon</span>
+            </li>
+          </ul>
+        </section>
+
+        <!-- Touch column. display:none until js/touch.js puts its layer up, so
+             the desktop cabinet is exactly the two columns it has always been. -->
+        <section class="help-col help-col--touch">
+          <h2 class="help-title">Touch</h2>
+          <ul class="map">
+            <li>
+              <span class="k tag">Buttons</span>
+              <span class="d">One player: arrows left, fire right &middot; two players: a cluster each edge</span>
+            </li>
+            <li>
+              <span class="k tag">Drag</span>
+              <span class="d">Slide anywhere on the screen to steer &middot; tap to fire &middot; toggle with the mode button</span>
+            </li>
+            <li>
+              <span class="k tag p2">P2</span>
+              <span class="d">Tap <kbd>P2</kbd> on the right column to join &middot; each player then owns one edge</span>
+            </li>
+            <li>
+              <span class="k tag">Pads</span>
+              <span class="d">A paired Xbox or PlayStation controller still works &middot; touch does not replace it</span>
+            </li>
+          </ul>
+        </section>
+
+      </div>
+
+      <p class="wake"><span class="wake-dot" aria-hidden="true"></span>
+        Press a button on <em>each</em> controller to wake it up &mdash;
+        browsers do not report a gamepad until it sends input.</p>
+
+      <!-- iOS only. Web Audio obeys the physical silent switch on iPhone and
+           iPad, so a muted game is usually a muted device, not a bug. -->
+      <p class="wake ios-note"><span class="wake-dot" aria-hidden="true"></span>
+        No sound? iPad and iPhone route this game through the <em>silent switch</em> &mdash;
+        flick Ring/Silent on, or turn Silent Mode off in Control Centre.</p>
+    </footer>
+
+  </div>
+
+  <script src="js/util.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/touch.js"></script>
+  <script src="js/sprites.js"></script>
+  <script src="js/entities.js"></script>
+  <script src="js/weapons.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+
+</body>
+</html>

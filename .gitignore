@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# TOASTER INVADERS
+#
+# This repo IS the deployable site: index.html, css/ and js/ are served
+# verbatim by GitHub Pages. Nothing under those paths may be ignored — there
+# is no build step and no generated output to exclude.
+#
+# Everything below is operating-system or editor debris.
+# ---------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.DocumentRevisions-V100
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Editors
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+
+# Anything a stray tool drops in. The game has no dependencies and no build,
+# so if one of these ever appears it is not part of the site.
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.cache/
+
+# Claude Code local dev-server config, not part of the site
+.claude/

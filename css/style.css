@@ -1,0 +1,1243 @@
+/* ===========================================================================
+ * TOASTER INVADERS — css/style.css
+ *
+ * The cabinet the game sits in. Everything inside the canvas is drawn by
+ * JavaScript; this file only supplies the night sky behind it, the letterbox,
+ * the screen bezel, and the control-panel help strip underneath.
+ *
+ * IMPORTANT: js/main.js sets canvas.style.width / canvas.style.height every
+ * resize to letterbox the 960x720 logical screen. Nothing here may set a
+ * width or height on #screen — only max-width, so a very narrow window cannot
+ * push the page sideways.
+ *
+ * No @import, no external fonts, no CDN. Colours mirror T.C.PAL in js/util.js.
+ * ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+ * Palette echo — kept in sync with T.C.PAL so the cabinet and the game agree.
+ * ------------------------------------------------------------------------ */
+:root {
+  --sky:        #101a2e;   /* PAL.sky        night-sky blue, gradient top    */
+  --sky-mid:    #0a1120;   /* interpolated midpoint, keeps the fade smooth   */
+  --sky-deep:   #05070d;   /* page floor, a touch darker than PAL.skyDeep    */
+  --chrome:     #c9d2dc;   /* PAL.chrome     bezel                           */
+  --ui:         #f3dfa8;   /* PAL.ui         key names, headings             */
+  --ui-dim:     #7b6f55;   /* PAL.uiDim      body copy on the help strip     */
+  --p1:         #7ee0c0;   /* PAL.p1                                         */
+  --p2:         #f0a3c8;   /* PAL.p2                                         */
+  --coil:       #ff5b2e;   /* PAL.coil       the "awake" indicator dot       */
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+          "DejaVu Sans Mono", "Liberation Mono", monospace;
+
+  --bezel-radius: 10px;
+
+  /* -------------------------------------------------------------------------
+   * TOUCH METRICS (SPEC-TOUCH section 2). Declared here so every number that
+   * tunes the thumb pad is in one place, mirroring T.C.TOUCH_* in js/util.js:
+   *   TOUCH_MIN_TARGET 56   TOUCH_FIRE_SIZE 88
+   *   TOUCH_COL_MIN 96      TOUCH_COL_MAX 190     TOUCH_COL_VW 15
+   * None of it is reachable on a machine that never sees a touch — every rule
+   * below is scoped to the layer js/touch.js only shows on a touch device.
+   * ---------------------------------------------------------------------- */
+  --ti-target: 56px;      /* smallest interactive target, any control      */
+  --ti-fire:   88px;      /* FIRE is bigger: pressed most, under pressure  */
+  --ti-meta:   56px;      /* START / BACK / mode strip                     */
+  --ti-gap:    10px;      /* between the big controls                      */
+  --ti-mgap:    8px;      /* between the small ones                        */
+  --ti-cpad:    8px;      /* column inner padding                          */
+
+  /* The reserved column, exactly the spec's clamp. The floor under it is the
+     width two 56px targets and their gap physically need: on an iPad the clamp
+     always wins (15vw of 1024 is 154px), and it only bites on a phone held
+     landscape, where honouring the clamp literally would mean 38px arrows.
+     js/main.js reserves the MEASURED column width, so widening the floor moves
+     the canvas over — the controls can never end up on the play field. */
+  --ti-col-floor: calc(2 * var(--ti-target) + var(--ti-gap) + 2 * var(--ti-cpad));
+  --ti-col-w: max(clamp(96px, 15vw, 190px), var(--ti-col-floor));
+
+  /* Nothing may sit under the home indicator or a rounded corner. The insets
+     are added to the column WIDTH rather than only to its padding, so the room
+     main.js reserves already contains them. */
+  --ti-safe-t: env(safe-area-inset-top, 0px);
+  --ti-safe-r: env(safe-area-inset-right, 0px);
+  --ti-safe-b: env(safe-area-inset-bottom, 0px);
+  --ti-safe-l: env(safe-area-inset-left, 0px);
+  --ti-col-l: calc(var(--ti-col-w) + var(--ti-safe-l));
+  --ti-col-r: calc(var(--ti-col-w) + var(--ti-safe-r));
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------------------
+ * Page — After Dark night sky, no margin, no scrollbars in either axis.
+ * ------------------------------------------------------------------------ */
+html,
+body {
+  /* 100% of the initial containing block IS 100vh on a desktop browser, so the
+     first line is the historical value unchanged. The second is for Safari,
+     where the sliding toolbar makes 100vh taller than what you can actually
+     see: `dvh` tracks the visible viewport, so the control columns stay above
+     the toolbar instead of hiding behind it. Engines without `dvh` drop the
+     declaration and keep the fallback. (For these two elements 100% and 100vh
+     are the same number — html resolves against the initial containing block —
+     so the 100vh line documents the intent without changing a desktop pixel.) */
+  height: 100%;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background-color: var(--sky-deep);
+  /* A soft glow overhead fading to almost-black at the floor: one radial pass
+     for the "moonlight" and one linear pass for the overall night gradient. */
+  background-image:
+    radial-gradient(ellipse 130% 70% at 50% -10%,
+                    rgba(16, 26, 46, 0.95) 0%,
+                    rgba(16, 26, 46, 0.35) 45%,
+                    rgba(5, 7, 13, 0) 78%),
+    linear-gradient(180deg,
+                    var(--sky) 0%,
+                    var(--sky-mid) 46%,
+                    var(--sky-deep) 100%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+
+  color: var(--ui-dim);
+  font-family: var(--mono);
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The cabinet stacks: screen fills what is left, control panel sits beneath. */
+#cabinet {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+
+  /* THE GAME ROOT (SPEC-TOUCH section 5). js/touch.js appends its control layer
+     here as the last child and js/main.js tests gestures against this element,
+     so the containing block for the overlay has to be the cabinet itself.
+     `position: relative` changes nothing on a desktop — nothing inside the
+     cabinet was positioned against the viewport — and `touch-action: none` is
+     inert for a mouse. On an iPad it is what stops a thumb that slides off a
+     button from rubber-banding the page, and what kills the double-tap zoom. */
+  position: relative;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+ * Stage — centres the canvas on both axes and letterboxes it on black.
+ * A vignette rather than flat #000 so the night sky still glows behind the
+ * screen at the very edges of the window.
+ * ------------------------------------------------------------------------ */
+#stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;          /* lets the flex child actually shrink */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 10px;
+  background:
+    radial-gradient(ellipse 85% 85% at 50% 46%,
+                    rgba(0, 0, 0, 0.45) 0%,
+                    rgba(0, 0, 0, 0.80) 55%,
+                    rgba(0, 0, 0, 0.94) 100%);
+}
+
+/* ---------------------------------------------------------------------------
+ * The screen itself. Sized in JS — only max-width is ours.
+ * ------------------------------------------------------------------------ */
+#screen {
+  display: block;
+  box-sizing: content-box;   /* JS-set width/height must be exact drawing px */
+
+  /* js/main.js owns the real size: every resize it collapses this box, measures
+     #stage, and writes style.width / style.height back. max-width is only a
+     guard for the case where that never runs — JavaScript off, or a boot crash
+     before layout() — so an unsized 960px canvas cannot push the page sideways.
+     There is deliberately NO max-height to match it: a percentage max-height
+     resolved against a flex-sized parent is a no-op (verified in Chrome), and
+     in an engine where it did bind it would clamp one axis only and squash the
+     picture off 4:3, which is exactly what SPEC section 2 forbids. */
+  max-width: 100%;
+
+  background: #000;
+  border: 1px solid rgba(201, 210, 220, 0.30);
+  border-radius: var(--bezel-radius);
+
+  /* Chrome-coloured rim, a warm bounce from the toasters, and a wide cool
+     halo so the screen reads as lit rather than pasted on. */
+  box-shadow:
+    0 0 0 1px rgba(5, 7, 13, 0.9),
+    0 0 18px rgba(201, 210, 220, 0.10),
+    0 0 70px rgba(64, 110, 170, 0.20),
+    0 14px 60px rgba(0, 0, 0, 0.75);
+
+  /* Crisp pixels at every zoom level, across engines. Order matters: the last
+     value an engine understands is the one that wins, and SPEC section 2 asks
+     for `pixelated` — the only value defined as nearest-neighbour. The legacy
+     spellings above it are fallbacks for engines that lack it (in Blink
+     `crisp-edges` is an alias of -webkit-optimize-contrast, which is a SMOOTHING
+     filter, so leaving it last would quietly blur the whole pixel grid). */
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+
+  /* Stop the browser treating the play area like a document. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+ * No-JavaScript panel — sits in the middle of the dark stage.
+ * ------------------------------------------------------------------------ */
+#noscript {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 34em;
+  padding: 20px 24px;
+  border: 1px solid rgba(201, 210, 220, 0.28);
+  border-radius: var(--bezel-radius);
+  background: rgba(5, 7, 13, 0.92);
+  color: var(--ui-dim);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+#noscript .noscript-title {
+  margin: 0 0 10px;
+  color: var(--ui);
+  font-size: 14px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+#noscript p {
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Control panel — the how-to-play strip. Reads as brushed metal under the
+ * screen, not as a paragraph of web copy.
+ * ------------------------------------------------------------------------ */
+#help {
+  flex: 0 0 auto;
+
+  /* The screen outranks the control panel. #help does not shrink, so on a short
+     or narrow window an unbounded strip would eat the whole cabinet and leave
+     #stage at ~0px, where main.js falls back to the window size and the canvas
+     is clipped away entirely by the stage's overflow:hidden. Capping it hands
+     that height back to the screen; the strip is help text and can be cut. */
+  max-height: 45vh;
+  overflow: hidden;
+
+  padding: 10px 20px 11px;
+  border-top: 1px solid rgba(201, 210, 220, 0.14);
+  background:
+    linear-gradient(180deg,
+                    rgba(201, 210, 220, 0.055) 0%,
+                    rgba(5, 7, 13, 0.55) 60%,
+                    rgba(5, 7, 13, 0.85) 100%);
+  box-shadow: inset 0 1px 0 rgba(238, 243, 248, 0.08);
+  font-size: 11px;
+  line-height: 1.45;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The keyboard column carries longer rows, so it gets the wider share. */
+.help-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  gap: 6px 34px;
+  max-width: 1060px;
+  margin: 0 auto;
+}
+
+.help-col {
+  min-width: 0;
+}
+
+.help-title {
+  margin: 0 0 5px;
+  color: var(--chrome);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  opacity: 0.75;
+}
+
+/* Two aligned columns per section: the keys, then what they do. `display:
+   contents` on the <li> lets every row share one grid so the gutters line up. */
+.map {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.map li {
+  display: contents;
+}
+
+.map .k {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.map .d {
+  color: var(--ui-dim);
+  min-width: 0;
+}
+
+/* Key caps -------------------------------------------------------------- */
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid rgba(243, 223, 168, 0.30);
+  border-radius: 3px;
+  background: rgba(243, 223, 168, 0.07);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+  color: var(--ui);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.map .d kbd {
+  margin: 0 1px;
+}
+
+.or {
+  color: var(--ui-dim);
+  opacity: 0.6;
+  padding: 0 1px;
+}
+
+/* Player tags in the keyboard column ------------------------------------ */
+.tag {
+  color: var(--chrome);
+  font-weight: 700;
+  letter-spacing: 0.20em;
+  opacity: 0.7;
+}
+
+.tag.p1 {
+  color: var(--p1);
+  opacity: 0.9;
+}
+
+.tag.p2 {
+  color: var(--p2);
+  opacity: 0.9;
+}
+
+/* Wake-up line ----------------------------------------------------------- */
+.wake {
+  max-width: 1060px;
+  margin: 7px auto 0;
+  padding-top: 6px;
+  border-top: 1px solid rgba(201, 210, 220, 0.10);
+  color: var(--ui-dim);
+  font-size: 10px;
+  letter-spacing: 0.10em;
+}
+
+.wake em {
+  color: var(--ui);
+  font-style: normal;
+}
+
+.wake-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--coil);
+  box-shadow: 0 0 6px rgba(255, 91, 46, 0.85);
+  vertical-align: 1px;
+  animation: coil-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes coil-pulse {
+  0%, 100% { opacity: 0.30; }
+  50%      { opacity: 1; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Narrow windows — the help columns stack, the strip gets tighter.
+ * ------------------------------------------------------------------------ */
+@media (max-width: 760px) {
+  .help-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  #help {
+    padding: 10px 14px 12px;
+  }
+
+  .map {
+    gap: 3px 10px;
+  }
+}
+
+/* Very short windows: give the screen back every pixel the strip can spare. */
+@media (max-height: 560px) {
+  #help {
+    padding: 8px 14px 9px;
+    line-height: 1.4;
+  }
+
+  .wake {
+    margin-top: 6px;
+    padding-top: 6px;
+  }
+}
+
+/* Shorter still and the strip costs more than it is worth: a 173px panel in a
+   440px window leaves the game a postage stamp. Drop it and let the screen have
+   the whole cabinet — the in-canvas UI still shows the controller hints. */
+@media (max-height: 480px) {
+  #help {
+    display: none;
+  }
+}
+
+/* ===========================================================================
+ * TOUCH  (SPEC-TOUCH sections 2 and 5)
+ *
+ * READ THIS FIRST — THE ONE RULE THIS SECTION EXISTS TO KEEP
+ * Touch is an ADDITIONAL input source, never a replacement. Every selector
+ * below is scoped either to `#touch-controls`, which js/touch.js only puts on
+ * the page when it has actually detected touch, or to
+ * `#cabinet:has(#touch-controls.is-visible)`, which matches nothing until that
+ * happens. A desktop with no touch therefore computes byte-for-byte the same
+ * layout it did before this section existed, and the keyboard and gamepad are
+ * untouched. Nothing here reacts to screen SIZE — a small desktop window keeps
+ * its keyboard and never grows a thumb pad.
+ *
+ * WHO OWNS WHAT
+ * js/touch.js owns the elements, the class names and the data-attributes; this
+ * file owns every pixel of how they look. The markup is fixed (see the DOM
+ * contract at the top of js/touch.js):
+ *
+ *   #touch-controls.ti-touch[data-layout][data-mode][data-orientation]
+ *     .ti-touch__col--left  (data-column="0")   .ti-touch__col--right ("1")
+ *       .ti-touch__cluster > .ti-touch__btn--fire + .ti-touch__dpad
+ *       .ti-touch__meta    > --start + --back + (--join | --mode)
+ *     .ti-touch__tapstart   .ti-touch__rotate
+ *
+ * WHY THE COLUMNS ARE AN OVERLAY AND NOT FLOW
+ * The layer is a child of #cabinet, positioned over it, so it does NOT shrink
+ * #stage. Keeping the controls off the play field is js/main.js's job: it
+ * subtracts T.Touch.columnWidth() twice before letterboxing, and columnWidth()
+ * measures the real .ti-touch__col box these rules produce. So the reserved
+ * width is whatever this file lays out — which is why the column carries its
+ * safe-area inset in its WIDTH, and why nothing here may add horizontal
+ * padding to #stage: that would reserve the room a second time and shrink the
+ * picture to a postage stamp.
+ * ======================================================================== */
+
+/* js/touch.js hides whatever the current layout, mode or screen does not use
+   with the `hidden` attribute, and releases those controls by id rather than
+   by geometry. This rule is `!important` so that no styling below can ever
+   resurrect a control a thumb could then press — a button that is visible but
+   not tracked is exactly how a direction gets stuck on. */
+#touch-controls[hidden],
+#touch-controls [hidden] {
+  display: none !important;
+}
+
+/* The layer itself. `pointer-events: none` in the middle on purpose: the
+   canvas has to keep receiving pointerdown, because DRAG mode steers from a
+   finger on the play field. The columns switch it back on. */
+.ti-touch {
+  display: none;
+}
+
+.ti-touch.is-visible {
+  display: block;
+}
+
+#touch-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+
+  pointer-events: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+
+  font-family: var(--mono);
+  text-transform: uppercase;
+}
+
+/* Once thumbs are driving, nothing on the page is text to be selected: a long
+   press that pops a selection handle or a callout menu mid-wave is a lost life.
+   Scoped to touch so a desktop player can still select the help strip. */
+#cabinet:has(#touch-controls.is-visible) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* The canvas is centred between the columns by main.js, but the top and bottom
+   insets are still ours: on a notched phone held landscape the home indicator
+   would otherwise sit over the floor line. Vertical only — see the header. */
+#cabinet:has(#touch-controls.is-visible) #stage {
+  padding-top: calc(10px + var(--ti-safe-t));
+  padding-bottom: calc(10px + var(--ti-safe-b));
+}
+
+/* ---------------------------------------------------------------------------
+ * The reserved columns. Full height, content bottom-anchored where the thumbs
+ * already are, and the whole column is a pointer target — a thumb that lands
+ * between two buttons and slides onto one must be tracked from the moment it
+ * touches down, which js/touch.js can only do if the event reaches the layer.
+ * ------------------------------------------------------------------------ */
+.ti-touch__col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;   /* bottom-anchored: SPEC-TOUCH section 2 */
+  align-items: center;
+  gap: var(--ti-gap);
+
+  padding: calc(var(--ti-cpad) + var(--ti-safe-t)) var(--ti-cpad)
+           calc(var(--ti-cpad) + var(--ti-safe-b));
+
+  pointer-events: auto;
+}
+
+.ti-touch__col--left {
+  left: 0;
+  width: var(--ti-col-l);
+  padding-left: calc(var(--ti-cpad) + var(--ti-safe-l));
+  --ti-accent: var(--p1);
+}
+
+.ti-touch__col--right {
+  right: 0;
+  width: var(--ti-col-r);
+  padding-right: calc(var(--ti-cpad) + var(--ti-safe-r));
+  --ti-accent: var(--p2);
+}
+
+/* SOLO hands BOTH columns to player one (arrows left, FIRE right), so the
+   right column must not wear player two's colour and imply otherwise. */
+.ti-touch[data-layout="solo"] .ti-touch__col--right {
+  --ti-accent: var(--p1);
+}
+
+/* Whose edge is this? Only worth saying once two players are on the device. */
+.ti-touch__col::before {
+  content: "";
+  display: none;
+  order: -2;               /* above the small strip, at the top of the stack */
+}
+
+.ti-touch[data-layout="duo"] .ti-touch__col::before {
+  content: "P1";
+  display: block;
+  color: var(--ti-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  opacity: 0.85;
+}
+
+.ti-touch[data-layout="duo"] .ti-touch__col--right::before {
+  content: "P2";
+}
+
+/* FIRE and the arrows sit at the very bottom under the thumb; START and BACK
+   are pushed up out of the way, because a mis-pressed pause mid-wave is worse
+   than a slightly longer reach for a button you press twice a game. */
+.ti-touch__cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ti-gap);
+  width: 100%;
+}
+
+.ti-touch__meta {
+  order: -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--ti-mgap);
+  width: 100%;
+}
+
+.ti-touch__dpad {
+  display: flex;
+  gap: var(--ti-gap);
+  width: 100%;
+}
+
+/* js/touch.js hides CONTROLS, not the boxes that hold them, so a wrapper whose
+   buttons are all `hidden` is still a zero-height flex item — and still earns
+   its gap, which floats FIRE 10px off the bottom of the column. These are the
+   two arrangements where that happens, spelled out from the same data
+   attributes js/touch.js sets, so the rule cannot drift out of step with it:
+   SOLO gives the right column only FIRE, and DRAG mode takes the whole cluster
+   off screen and steers from the canvas instead. */
+.ti-touch[data-layout="solo"] .ti-touch__col--right .ti-touch__dpad {
+  display: none;
+}
+
+.ti-touch[data-mode="drag"] .ti-touch__cluster {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * Buttons. Arcade caps: chrome rim, dark glass face, a warm bounce off the
+ * toasters when pressed. `transition: none` is deliberate — press feedback has
+ * to be the same frame the finger lands, and js/touch.js adds `.is-pressed` on
+ * pointerdown, so there is nothing to animate towards.
+ * ------------------------------------------------------------------------ */
+.ti-touch__btn {
+  -webkit-appearance: none;
+  appearance: none;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  margin: 0;
+  padding: 0;
+  min-width: var(--ti-target);
+  min-height: var(--ti-target);
+
+  border: 1px solid rgba(201, 210, 220, 0.34);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg,
+                    rgba(201, 210, 220, 0.17) 0%,
+                    rgba(201, 210, 220, 0.06) 42%,
+                    rgba(5, 7, 13, 0.72) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(238, 243, 248, 0.22),
+    0 2px 0 rgba(0, 0, 0, 0.55),
+    0 6px 16px rgba(0, 0, 0, 0.45);
+
+  color: var(--ui);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  text-transform: uppercase;
+
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  transition: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The button never takes focus (js/touch.js sets tabindex="-1"), so a focus
+   ring here would only ever be a leftover from a tap. */
+.ti-touch__btn:focus {
+  outline: none;
+}
+
+.ti-touch__btn-label {
+  display: block;
+  pointer-events: none;
+}
+
+/* Held by at least one finger. Reference-counted in js/touch.js, so two thumbs
+   on FIRE and one lifting leaves this on — which is the point. */
+.ti-touch__btn.is-pressed {
+  border-color: var(--ti-accent, var(--ui));
+  background:
+    linear-gradient(180deg,
+                    rgba(243, 223, 168, 0.34) 0%,
+                    rgba(201, 210, 220, 0.16) 100%);
+  box-shadow:
+    inset 0 2px 7px rgba(0, 0, 0, 0.55),
+    0 0 16px rgba(243, 223, 168, 0.35);
+  color: #fff;
+  transform: translateY(2px);
+}
+
+/* FIRE: the biggest thing on the device, never under 88px (SPEC-TOUCH §2). */
+.ti-touch__btn--fire {
+  width: 100%;
+  height: clamp(var(--ti-fire), 17vh, 124px);
+  min-height: var(--ti-fire);
+  border-radius: 22px;
+  border-color: rgba(255, 216, 94, 0.42);
+  background:
+    radial-gradient(ellipse 120% 90% at 50% 8%,
+                    rgba(255, 216, 94, 0.24) 0%,
+                    rgba(255, 216, 94, 0.05) 55%,
+                    rgba(5, 7, 13, 0.80) 100%);
+  color: var(--ui);
+  font-size: clamp(12px, 2vh, 16px);
+  letter-spacing: 0.22em;
+}
+
+.ti-touch__btn--fire.is-pressed {
+  border-color: var(--coil);
+  background:
+    radial-gradient(ellipse 120% 90% at 50% 8%,
+                    rgba(255, 176, 74, 0.62) 0%,
+                    rgba(255, 91, 46, 0.30) 60%,
+                    rgba(5, 7, 13, 0.70) 100%);
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 22px rgba(255, 91, 46, 0.55);
+}
+
+/* The arrows share the column evenly and never drop under 56px. */
+.ti-touch__dpad .ti-touch__btn {
+  flex: 1 1 0;
+  min-width: var(--ti-target);
+  height: clamp(var(--ti-target), 11vh, 84px);
+  font-size: clamp(20px, 3.4vh, 30px);
+  letter-spacing: 0;
+  color: var(--ti-accent, var(--ui));
+}
+
+.ti-touch__dpad .ti-touch__btn.is-pressed {
+  color: #fff;
+}
+
+/* START / BACK / the P2 door / the control-mode toggle. Two to a row, a third
+   wrapping under them. Same 56px floor as everything else. */
+.ti-touch__meta .ti-touch__btn {
+  flex: 1 1 calc(50% - var(--ti-mgap));
+  min-width: var(--ti-target);
+  height: var(--ti-meta);
+  min-height: var(--ti-meta);
+  border-radius: 12px;
+  font-size: 9px;
+  letter-spacing: 0.10em;
+}
+
+.ti-touch__btn--start {
+  color: var(--ti-accent, var(--ui));
+}
+
+.ti-touch__btn--back,
+.ti-touch__btn--mode {
+  color: var(--ui-dim);
+}
+
+/* CO-OP / CLASSIC. Only reachable route to CLASSIC without a gamepad, so it
+ * gets its own colour rather than sitting dim next to BACK. Select screen only. */
+.ti-touch__btn--gamemode {
+  flex-basis: 100%;
+  border-color: rgba(126, 224, 192, 0.40);
+  color: var(--p1);
+  letter-spacing: 0.16em;
+}
+
+/* The one button that exists only so a second player can get in. */
+.ti-touch__btn--join {
+  flex-basis: 100%;
+  border-color: rgba(240, 163, 200, 0.45);
+  color: var(--p2);
+  letter-spacing: 0.30em;
+}
+
+/* ---------------------------------------------------------------------------
+ * TAP TO START — the title screen has nothing to aim at, so it gets one large
+ * obvious target. Sits between the columns so it can never cover a control.
+ * ------------------------------------------------------------------------ */
+.ti-touch__tapstart {
+  position: absolute;
+  left: var(--ti-col-l);
+  right: var(--ti-col-r);
+  bottom: calc(16% + var(--ti-safe-b));
+  margin: 0 auto;
+  max-width: 420px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ti-fire);
+  padding: 0 18px;
+
+  border: 1px solid rgba(243, 223, 168, 0.45);
+  border-radius: 20px;
+  background: rgba(5, 7, 13, 0.55);
+  box-shadow: 0 0 26px rgba(243, 223, 168, 0.16);
+
+  color: var(--ui);
+  font-size: clamp(13px, 2.4vh, 19px);
+  font-weight: 700;
+  letter-spacing: 0.30em;
+
+  pointer-events: auto;
+  touch-action: none;
+  cursor: pointer;
+  animation: ti-tap-pulse 1.8s ease-in-out infinite;
+}
+
+.ti-touch__tapstart.is-pressed {
+  border-color: var(--ui);
+  background: rgba(243, 223, 168, 0.22);
+  color: #fff;
+  animation: none;
+}
+
+@keyframes ti-tap-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+/* ---------------------------------------------------------------------------
+ * PORTRAIT — 4:3 with a player down each edge does not exist in portrait, so
+ * the game is covered and js/main.js keeps it paused until the device turns.
+ * ------------------------------------------------------------------------ */
+.ti-touch__rotate {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+
+  padding: calc(24px + var(--ti-safe-t)) calc(24px + var(--ti-safe-r))
+           calc(24px + var(--ti-safe-b)) calc(24px + var(--ti-safe-l));
+
+  /* Opaque: this hides the game, it does not tint it. */
+  background:
+    radial-gradient(ellipse 90% 60% at 50% 32%,
+                    rgba(16, 26, 46, 0.95) 0%,
+                    rgba(5, 7, 13, 0.98) 70%),
+    var(--sky-deep);
+
+  pointer-events: auto;
+  text-align: center;
+}
+
+.ti-touch__rotate-art {
+  font-size: clamp(48px, 13vh, 92px);
+  line-height: 1;
+  color: var(--chrome);
+  text-shadow: 0 0 22px rgba(201, 210, 220, 0.35);
+  animation: ti-rotate-nudge 2.6s ease-in-out infinite;
+}
+
+@keyframes ti-rotate-nudge {
+  0%, 14%   { transform: rotate(90deg); }
+  54%, 100% { transform: rotate(0deg); }
+}
+
+.ti-touch__rotate-title {
+  margin: 0;
+  color: var(--ui);
+  font-size: clamp(13px, 2.6vh, 18px);
+  font-weight: 700;
+  letter-spacing: 0.28em;
+}
+
+.ti-touch__rotate-text {
+  margin: 0;
+  max-width: 34em;
+  color: var(--ui-dim);
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  line-height: 1.6;
+  text-transform: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * THE HELP STRIP ON TOUCH
+ *
+ * On the desktop the strip is part of the cabinet and stays exactly as it was.
+ * On touch it must not push the canvas up the page, so it collapses behind a
+ * "?" and reopens as an overlay. All of it is driven by the hidden checkbox in
+ * index.html — no script, nothing that can disagree with the game loop.
+ * ------------------------------------------------------------------------ */
+
+/* The checkbox itself. `display: none` rather than the usual clip-and-hide
+   pattern, because the point here is that it must NOT be focusable.
+
+   A visually-hidden-but-rendered control is still MOUSE focusable, and clicking
+   a <label> focuses the control it labels — `tabindex="-1"` only takes it out of
+   the TAB order, it does not stop that. So on any engine that focuses form
+   controls on click (Chrome on Windows/Linux, i.e. a Windows touchscreen laptop,
+   which gets the touch layer like any other device with maxTouchPoints > 0),
+   tapping "?" would park focus on this checkbox and every subsequent Space —
+   P1's fire key — would toggle the help panel as well as shoot. Keyboard play is
+   the one thing this phase may not regress.
+
+   `display: none` removes it from the focus and accessibility trees while the
+   label still toggles it (label activation runs a synthetic click on the
+   control, which does not require the control to be rendered) and `:checked ~`
+   still matches, because sibling selectors read the DOM, not the box tree. */
+.help-check {
+  display: none;
+}
+
+/* Hidden until the touch layer is up — this is the whole of the desktop
+   footprint of the collapse feature. */
+.help-btn {
+  display: none;
+}
+
+.help-col--touch {
+  display: none;
+}
+
+.ios-note {
+  display: none;
+}
+
+/* The label is a 72px transparent hit box with a 56px disc drawn inside it:
+   the disc is the affordance, the 8px of padding around it is the "generous
+   invisible padding" SPEC-TOUCH section 2 asks for, and it matters more here
+   than on a game button because a round target loses its corners to the
+   border-radius even for hit-testing. */
+#cabinet:has(#touch-controls.is-visible) .help-btn {
+  position: absolute;
+  z-index: 70;                /* above the control layer, so it stays tappable */
+  top: var(--ti-safe-t);
+  left: var(--ti-safe-l);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--ti-target) + 16px);
+  height: calc(var(--ti-target) + 16px);
+  padding: 8px;
+  background: none;
+
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#cabinet:has(#touch-controls.is-visible) .help-btn::before {
+  content: "?";
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+
+  border: 1px solid rgba(201, 210, 220, 0.30);
+  border-radius: 50%;
+  background: rgba(5, 7, 13, 0.72);
+  color: var(--ui-dim);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#cabinet:has(#touch-controls.is-visible) .help-check:checked ~ .help-btn::before {
+  content: "\2715";           /* ✕ — the same button closes it */
+  border-color: var(--ui);
+  color: var(--ui);
+  font-size: 15px;
+}
+
+/* Collapsed: out of the flex column entirely, so #stage gets the whole cabinet
+   and the canvas is never pushed up the page. */
+#cabinet:has(#touch-controls.is-visible) #help {
+  display: none;
+}
+
+#cabinet:has(#touch-controls.is-visible) .help-check:checked ~ #help {
+  display: block;
+  position: absolute;
+  z-index: 60;
+  top: calc(8px + var(--ti-safe-t));
+  right: calc(8px + var(--ti-safe-r));
+  bottom: calc(8px + var(--ti-safe-b));
+  left: calc(8px + var(--ti-safe-l));
+
+  max-height: none;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  /* #cabinet is `touch-action: none` so a stray drag cannot pan the game. This
+     panel is its own scroll container, so naming pan-y here is what lets a
+     long help list still be read on a short screen. */
+  touch-action: pan-y;
+
+  padding: 14px 16px 16px calc(16px + var(--ti-target));
+  border: 1px solid rgba(201, 210, 220, 0.22);
+  border-radius: var(--bezel-radius);
+  background: rgba(5, 7, 13, 0.96);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.7);
+}
+
+#cabinet:has(#touch-controls.is-visible) .help-check:checked ~ #help .help-cols {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+#cabinet:has(#touch-controls.is-visible) .help-check:checked ~ #help .help-col--touch {
+  display: block;
+}
+
+/* ---------------------------------------------------------------------------
+ * ADD TO HOME SCREEN — iOS Safari only, and only in a browser tab. Fades out
+ * on its own so it is a tip and not a permanent sticker on the play field.
+ * ------------------------------------------------------------------------ */
+#a2hs {
+  display: none;
+}
+
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: browser) and (orientation: landscape) {
+    #cabinet:has(#touch-controls.is-visible) #a2hs {
+      display: block;
+      position: absolute;
+      z-index: 50;
+      top: calc(6px + var(--ti-safe-t));
+      left: 50%;
+      transform: translateX(-50%);
+
+      margin: 0;
+      padding: 5px 14px;
+      max-width: 66vw;
+
+      border: 1px solid rgba(201, 210, 220, 0.18);
+      border-radius: 999px;
+      background: rgba(5, 7, 13, 0.78);
+
+      color: var(--ui-dim);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+
+      pointer-events: none;
+      animation: ti-a2hs-fade 15s ease-in forwards;
+    }
+  }
+}
+
+#a2hs .a2hs-key {
+  margin-right: 8px;
+  color: var(--chrome);
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  opacity: 0.75;
+}
+
+#a2hs em {
+  color: var(--ui);
+  font-style: normal;
+}
+
+@keyframes ti-a2hs-fade {
+  0%, 74%  { opacity: 0.9; }
+  100%     { opacity: 0; }
+}
+
+/* Reading the help is not playing, so the tip gets out of the way. */
+#cabinet:has(#touch-controls.is-visible) .help-check:checked ~ #a2hs {
+  display: none;
+}
+
+/* iOS only: Web Audio is silenced by the physical Ring/Silent switch, which
+   looks exactly like a broken game unless somebody says so once.
+
+   Gated on the touch layer as well as on the @supports test, like every other
+   rule in this section. `@supports (-webkit-touch-callout: none)` is the usual
+   iOS/iPadOS probe, but it is a probe for a WebKit PROPERTY, not for a device:
+   any engine that ships the property answers yes. On its own it would put an
+   extra line in the desktop help strip — which is furniture that grows the
+   footer and shrinks #stage, i.e. a desktop layout regression from a rule that
+   has nothing to do with desktop. The touch gate makes that impossible. */
+@supports (-webkit-touch-callout: none) {
+  #cabinet:has(#touch-controls.is-visible) .ios-note {
+    display: block;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Short landscape windows — a phone on its side. Only the WHITESPACE gives:
+ * every target keeps its 56px floor and FIRE keeps its 88, because a full
+ * column costs 310px of height at these settings and the shortest landscape
+ * phone still has 320. Tightening the padding also narrows the column (the
+ * floor is derived from it), which hands the width straight back to the
+ * picture on the screen where it is scarcest.
+ * ------------------------------------------------------------------------ */
+@media (max-height: 420px) {
+  :root {
+    --ti-gap: 8px;
+    --ti-mgap: 6px;
+    --ti-cpad: 6px;
+  }
+
+  .ti-touch__meta .ti-touch__btn {
+    font-size: 8px;
+  }
+
+  .ti-touch[data-layout="duo"] .ti-touch__col::before {
+    font-size: 9px;
+  }
+}
+
+/* Shorter still (a 320px-tall phone on its side) and a full control column
+   reaches the top of the screen, where the "?" lives. Two 56px targets on top
+   of each other is how a player pauses when they meant to read the help, so
+   the "?" moves to the middle instead — over the letterbox above the picture,
+   and at worst over the HUD strip, never over a control and never over the
+   bottom of the play field where the ship is. The tip goes: there is no room
+   for it, and it is only ever a tip. */
+@media (max-height: 400px) {
+  #cabinet:has(#touch-controls.is-visible) .help-btn {
+    left: 50%;
+    transform: translateX(-50%);
+    top: calc(2px + var(--ti-safe-t));
+  }
+
+  /* ...but only while it is the "?". Once the panel is OPEN it covers the
+     columns, so the collision the centring exists to avoid cannot happen — and
+     a centred ✕ instead lands on the panel's own first row of help text, which
+     is laid out around a 72px left gutter (padding-left) reserved for exactly
+     this button. Put it back in that gutter. */
+  #cabinet:has(#touch-controls.is-visible) .help-check:checked ~ .help-btn {
+    left: var(--ti-safe-l);
+    top: var(--ti-safe-t);
+    transform: none;
+  }
+
+  #cabinet:has(#touch-controls.is-visible) #a2hs {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * PORTRAIT — pair the media query with js/touch.js's data-orientation so the
+ * game is covered the moment the device turns, whichever notices first. Both
+ * are scoped to touch: a tall NARROW desktop window is still a desktop and
+ * must keep playing.
+ * ------------------------------------------------------------------------ */
+@media (orientation: portrait) {
+  #cabinet:has(#touch-controls.is-visible) #stage {
+    visibility: hidden;
+  }
+
+  /* The rotate prompt is the only thing to look at, so the page furniture that
+     would otherwise float over it goes away. */
+  #cabinet:has(#touch-controls.is-visible) .help-btn,
+  #cabinet:has(#touch-controls.is-visible) .help-check:checked ~ #help,
+  #cabinet:has(#touch-controls.is-visible) #a2hs {
+    display: none;
+  }
+
+  /* Belt to js/touch.js's braces: it also marks every control `hidden` in
+     portrait, so nothing under this overlay is pressable either way. */
+  .ti-touch[data-orientation="portrait"] .ti-touch__col,
+  .ti-touch[data-orientation="portrait"] .ti-touch__tapstart {
+    visibility: hidden;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * No sticky hover. A tap on a touchscreen leaves :hover latched on the button
+ * until you press something else, which reads as a stuck control — so hover
+ * styling exists only where there is a real pointer to hover with.
+ * ------------------------------------------------------------------------ */
+@media (hover: hover) and (pointer: fine) {
+  .ti-touch__btn:hover,
+  .ti-touch__tapstart:hover,
+  #cabinet:has(#touch-controls.is-visible) .help-btn:hover::before {
+    border-color: rgba(243, 223, 168, 0.55);
+    color: var(--ui);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion — kill every CSS animation this stylesheet introduces.
+ * (The game's own canvas animation is JavaScript and is not affected here.)
+ * ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .wake-dot {
+    animation: none;
+    opacity: 0.85;
+  }
+
+  /* The blanket rule below collapses every animation to ~0ms, and a `forwards`
+     fill would then snap these to their END state — an invisible tip and a
+     dimmed prompt. Name them explicitly so reducing motion removes the motion
+     and nothing else. */
+  .ti-touch__tapstart {
+    animation: none;
+    opacity: 1;
+  }
+
+  .ti-touch__rotate-art {
+    animation: none;
+    transform: none;
+  }
+
+  #cabinet:has(#touch-controls.is-visible) #a2hs {
+    animation: none;
+    opacity: 0.9;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

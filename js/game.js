@@ -1,0 +1,2658 @@
+/* ===========================================================================
+ * TOASTER INVADERS — js/game.js
+ *
+ * ROLE: the rulebook. Owns the state machine (title / select / wave / play /
+ * pause / over), session + board construction, the formation march, enemy fire,
+ * every collision, scoring, wave progression, and the After Dark background
+ * that sits behind EVERY screen.
+ *
+ *   T.Game.init(canvas)
+ *   T.Game.update(dt)      // dt is always T.C.FIXED_DT
+ *   T.Game.render(ctx)
+ *   T.Game.state           // 'title'|'select'|'play'|'pause'|'wave'|'over'
+ *   T.Game.session         // current Session or null
+ *
+ * This file NEVER draws text — all screen furniture goes through T.UI, which
+ * loads after this file (that is fine: every reference is inside a function and
+ * resolves at call time). All sprites come from T.Sprites, all sound from
+ * T.Audio, all entity structs + pixel-accurate bunker work from T.Entities.
+ *
+ * Classic <script> file: no imports, no exports, no build step.
+ * ========================================================================= */
+(function (T) {
+  'use strict';
+
+  const C = T.C;
+  const U = T.Util;
+  const PAL = C.PAL;
+
+  /* -------------------------------------------------------------------------
+   * LOCAL CONSTANTS
+   * Only numbers the SPEC states inline and that T.C has no slot for live here.
+   * Anything that tunes core feel is read from T.C, never redeclared.
+   * ---------------------------------------------------------------------- */
+  const HI_KEY = 'toasterInvaders.hi';
+
+  const WAVE_BANNER_TIME   = 2.0;   // §9: "WAVE n" banner duration
+  const PLAYER_BANNER_TIME = 1.5;   // §9: classic-mode turn-swap banner
+  const WAVE_Y_STEP        = 18;    // §3: each wave starts this much lower
+  const WAVE_Y_CAP         = C.BUNKER_Y - 200;   // §3: never start below this
+  const INVASION_Y         = C.BUNKER_Y + 40;    // §3: toasters here = board over
+
+  const BUNKER_COUNT = 4;           // classic four shields
+  const BUNKER_W     = 96;          // 'bunker' sprite size (§7)
+  const BUNKER_H     = 64;
+
+  const DMG_R_BUTTER = 9;           // §4: greasy melt
+  const DMG_R_JAM    = 5;           // §4: neat puncture
+  const DMG_R_BOMB   = 7;
+  const DMG_R_ENEMY  = 13;          // toasters chew shields from below
+  const JAM_WIN_ODDS = 0.75;        // §4: jam beats a bomb 75% of the time
+
+  /* How long a FIRE press is remembered when the weapon could not answer it.
+   *
+   * SPEC-CHARACTERS §2's `refire` is a real lockout: for a fraction of a second
+   * after your shot dies, the trigger is closed. Base weapons answer the RISING
+   * EDGE only (that is the classic one-tap-one-shot feel, and it is what stops
+   * a held button becoming auto-fire), so a tap that lands inside that window
+   * had nothing to fire and no second edge would ever arrive — the input was
+   * silently eaten and the player had to let go and press again. Remembering
+   * the edge for a moment fixes that without touching the feel: a HELD trigger
+   * still produces exactly one edge and therefore exactly one shot.
+   *
+   * This is the SLACK on top of the weapon's own `refire`: a press is held for
+   * refire + FIRE_BUFFER seconds, which is long enough to survive a lockout it
+   * arrived at the very start of, and short enough that a tap made while your
+   * shot is still in flight is forgotten rather than queued. */
+  const FIRE_BUFFER     = 0.10;
+
+  const SPAWN_INVULN    = 1.4;      // seconds of blink-invulnerability on respawn
+  const WAVE_CLEAR_WAIT = 0.9;      // beat between last kill and the wave banner
+  const BOARD_END_WAIT  = 1.3;      // beat between the final loss and 'over'
+  const BOOM_TIME       = 0.28;     // enemy explosion sprite lifetime
+  const BOOM_SLOTS      = 16;
+  const POPUP_TIME      = 0.9;      // floating score popup lifetime
+  const POPUP_SLOTS     = 8;
+  const UFO_MIN_ALIVE   = 8;        // arcade rule: no bonus pass on a thin field
+  const BOMB_ANIM       = 0.11;     // bomb tumble frame time
+  const UFO_ANIM_HZ     = 8;        // §7: ufo wings alternate at 8Hz
+
+  const STAR_COUNT = 70;            // §2: ~70 wrapping stars over 3 layers
+  const FLY_COUNT  = 5;             // ambient winged toast drifters
+
+  /* --- weapon upgrade system (SPEC-WEAPONS §5) --------------------------
+   * Every tunable the weapon loop actually needs lives in T.C; what is left
+   * here is presentation — how long the pickup banner hangs about and where
+   * the HUD's weapon chips are anchored. T.UI owns their internal layout, this
+   * file only says which corner each one belongs to.
+   */
+  const PICKUP_BANNER_TIME = 1.4;   // §8: pickup banner duration
+  const CHIP_EDGE  = 22;            // matches the HUD's own side margin
+  const CHIP_Y     = C.PLAY_TOP + 4;   // just under the HUD strip
+  const SYRUP_TINT = 0.45;          // how hard a syruped toaster is washed
+
+  /* Star layer tuning: [drift px/s, size, base alpha]. Layer 0 is deepest. */
+  const STAR_LAYERS = [
+    { speed: 5,  size: 1, alpha: 0.30 },
+    { speed: 11, size: 1, alpha: 0.55 },
+    { speed: 20, size: 2, alpha: 0.85 }
+  ];
+
+  /* =========================================================================
+   * AFTER DARK BACKGROUND
+   * A night-sky gradient, a three-layer parallax starfield drifting slowly
+   * down-and-left, and winged toast slices gliding right-to-left at low alpha.
+   * Updated on every state so title and select feel like the screensaver too.
+   * ====================================================================== */
+  const stars = [];
+  const flies = [];
+  let skyGradient = null;
+  let skyGradientCtx = null;
+
+  function initBackground() {
+    stars.length = 0;
+    for (let i = 0; i < STAR_COUNT; i++) {
+      const layer = i % STAR_LAYERS.length;
+      stars.push({
+        x: U.randRange(0, C.W),
+        y: U.randRange(0, C.H),
+        layer: layer,
+        phase: U.randRange(0, Math.PI * 2),
+        rate: U.randRange(0.6, 2.2)
+      });
+    }
+
+    flies.length = 0;
+    for (let i = 0; i < FLY_COUNT; i++) flies.push(makeFly(U.randRange(0, C.W)));
+  }
+
+  /** One ambient background toast slice, spawned at x. */
+  function makeFly(x) {
+    return {
+      x: x,
+      y: U.randRange(C.PLAY_TOP - 40, C.PLAY_BOTTOM - 40),
+      vx: -U.randRange(16, 38),
+      vy: U.randRange(-4, 6),
+      alpha: U.randRange(0.08, 0.17),
+      animT: U.randRange(0, 0.3),
+      frame: 0
+    };
+  }
+
+  /** Recycle a drifter that has left the left edge back onto the right edge. */
+  function resetFly(f) {
+    f.x = C.W + U.randRange(10, 160);
+    f.y = U.randRange(C.PLAY_TOP - 40, C.PLAY_BOTTOM - 40);
+    f.vx = -U.randRange(16, 38);
+    f.vy = U.randRange(-4, 6);
+    f.alpha = U.randRange(0.08, 0.17);
+  }
+
+  function updateBackground(dt) {
+    for (let i = 0; i < stars.length; i++) {
+      const s = stars[i];
+      const L = STAR_LAYERS[s.layer];
+      // Drift downward and slightly left, then wrap on both axes.
+      s.x -= L.speed * 0.45 * dt;
+      s.y += L.speed * dt;
+      if (s.x < -2) s.x += C.W + 4;
+      if (s.y > C.H + 2) s.y -= C.H + 4;
+    }
+
+    for (let i = 0; i < flies.length; i++) {
+      const f = flies[i];
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      f.animT += dt;
+      if (f.animT >= 0.22) { f.animT = 0; f.frame = f.frame ? 0 : 1; }
+      if (f.y < C.PLAY_TOP - 60 || f.y > C.PLAY_BOTTOM - 20) f.vy = -f.vy;
+      if (f.x < -40) resetFly(f);
+    }
+  }
+
+  function drawBackground(ctx) {
+    // Vertical night-sky gradient, built once per context.
+    if (!skyGradient || skyGradientCtx !== ctx) {
+      skyGradient = ctx.createLinearGradient(0, 0, 0, C.H);
+      skyGradient.addColorStop(0, PAL.sky);
+      skyGradient.addColorStop(1, PAL.skyDeep);
+      skyGradientCtx = ctx;
+    }
+    ctx.fillStyle = skyGradient;
+    ctx.fillRect(0, 0, C.W, C.H);
+
+    // Parallax starfield.
+    ctx.fillStyle = PAL.star;
+    for (let i = 0; i < stars.length; i++) {
+      const s = stars[i];
+      const L = STAR_LAYERS[s.layer];
+      const twinkle = 0.75 + 0.25 * Math.sin(Game.time * s.rate + s.phase);
+      ctx.globalAlpha = L.alpha * twinkle;
+      ctx.fillRect(s.x | 0, s.y | 0, L.size, L.size);
+    }
+    ctx.globalAlpha = 1;
+
+    // Ambient winged toast, well behind the play field.
+    const S = T.Sprites;
+    if (S && typeof S.draw === 'function') {
+      for (let i = 0; i < flies.length; i++) {
+        const f = flies[i];
+        ctx.globalAlpha = f.alpha;
+        S.draw(ctx, f.frame ? 'toastFly1' : 'toastFly0', Math.round(f.x), Math.round(f.y));
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /* =========================================================================
+   * THIN WRAPPERS
+   * Audio / input / sprites are written by other agents; these guards keep a
+   * missing or half-loaded sibling from taking the whole game down.
+   * ====================================================================== */
+  function sfx(name, opts) {
+    const A = T.Audio;
+    if (A && typeof A.play === 'function') A.play(name, opts);
+  }
+
+  function marchStart() {
+    const A = T.Audio;
+    if (A && typeof A.startMarch === 'function') A.startMarch();
+  }
+
+  function marchStop() {
+    const A = T.Audio;
+    if (A && typeof A.stopMarch === 'function') A.stopMarch();
+  }
+
+  function marchTempo(seconds) {
+    const A = T.Audio;
+    if (A && typeof A.setMarchTempo === 'function') A.setMarchTempo(seconds);
+  }
+
+  function sirenStart() {
+    const A = T.Audio;
+    if (A && typeof A.startUfo === 'function') A.startUfo();
+  }
+
+  function sirenStop() {
+    const A = T.Audio;
+    if (A && typeof A.stopUfo === 'function') A.stopUfo();
+  }
+
+  function rumble(slot, ms, strong, weak) {
+    const I = T.Input;
+    if (I && typeof I.rumble === 'function') I.rumble(slot, ms, strong, weak);
+  }
+
+  function pad(slot) {
+    const I = T.Input;
+    return (I && typeof I.get === 'function') ? I.get(slot) : null;
+  }
+
+  function anyPressed(name) {
+    const I = T.Input;
+    return !!(I && typeof I.anyPressed === 'function' && I.anyPressed(name));
+  }
+
+  /** Clear an input edge on BOTH pads so a state change can't re-trigger it. */
+  function consumeAll(name) {
+    const I = T.Input;
+    if (!I || typeof I.consume !== 'function') return;
+    I.consume(0, name);
+    I.consume(1, name);
+  }
+
+  function blit(ctx, name, x, y) {
+    const S = T.Sprites;
+    if (S && typeof S.draw === 'function') S.draw(ctx, name, Math.round(x), Math.round(y));
+  }
+
+  /**
+   * Blit a sprite through T.Sprites.tint's cached recolour, falling back to the
+   * plain sprite when the colour wash is unavailable. Used for syruped toasters.
+   */
+  function blitTinted(ctx, name, x, y, color) {
+    const S = T.Sprites;
+    if (S && typeof S.tint === 'function' && typeof S.has === 'function' && S.has(name)) {
+      const t = S.tint(name, color, SYRUP_TINT);
+      if (t && t.canvas) {
+        ctx.drawImage(t.canvas, Math.round(x), Math.round(y));
+        return;
+      }
+    }
+    blit(ctx, name, x, y);
+  }
+
+  /* The syrup trap's own colour, read once from the roster so the tint on a
+   * syruped toaster can never drift away from the token that caused it. */
+  let syrupTint = null;
+
+  function syrupColor() {
+    if (syrupTint) return syrupTint;
+    const W = T.Weapons;
+    if (W && typeof W.byId === 'function') {
+      try {
+        syrupTint = W.byId('syrup').color;
+        return syrupTint;
+      } catch (err) {
+        /* roster not loaded — fall through to a palette colour */
+      }
+    }
+    return PAL.crust;
+  }
+
+  /**
+   * Call a T.UI entry point if ui.js has loaded and defines it. Fixed arity
+   * (rather than .apply(arguments)) keeps the render path allocation-free;
+   * five slots covers the widest signature, drawText(ctx, str, x, y, opts).
+   */
+  function uiCall(name, a, b, c, d, e) {
+    const ui = T.UI;
+    if (ui && typeof ui[name] === 'function') ui[name](a, b, c, d, e);
+  }
+
+  /* =========================================================================
+   * THE CHARACTER ROSTER  (SPEC-CHARACTERS.md §2 and §6)
+   *
+   * `ship.kind` is now one of NINE character ids, not the old 'bread' / 'jam'
+   * pair, so nothing in this file may branch on a kind any more. Every
+   * per-character fact — ship sprites, life icon, base weapon, muzzle sound,
+   * bunker carve radius, the select-screen copy — is a column of the
+   * T.C.BASE_WEAPONS table, and everything below only ever LOOKS IT UP. A
+   * tenth character is then a row in util.js and nothing here at all.
+   * ====================================================================== */
+  const ROSTER = C.BASE_WEAPONS || {};
+  const ROSTER_ORDER = (C.CHARACTER_ORDER && C.CHARACTER_ORDER.length)
+    ? C.CHARACTER_ORDER
+    : Object.keys(ROSTER);
+
+  /* The carousel opens on the two neutral baselines: they are what P1 and P2
+   * start on, and what an unknown kind from an older save or a harness gets. */
+  const KIND_DEFAULT = ROSTER_ORDER[0] || 'bread';
+  const KIND_P2      = ROSTER_ORDER[1] || KIND_DEFAULT;
+
+  /* Charred toast is charred toast: no character in the roster overrides the
+   * death animation, but a row MAY carry its own `death` pair and this is the
+   * one place that would have to know about it. */
+  const DEATH_SPRITES = ['boomPlayer0', 'boomPlayer1'];
+
+  /* The same rows, indexed by WEAPON id: a ship knows its character, but a
+   * shot only knows what fired it, and the collision passes hold shots. */
+  const ROSTER_BY_WID = Object.create(null);
+  (function indexRosterByWid() {
+    for (let i = 0; i < ROSTER_ORDER.length; i++) {
+      const row = ROSTER[ROSTER_ORDER[i]];
+      if (row && row.wid) ROSTER_BY_WID[row.wid] = row;
+    }
+  })();
+
+  /* Roster membership as a NULL-PROTOTYPE set, and the only thing anything
+   * below is allowed to ask "is this a character?" with.
+   *
+   * T.C.BASE_WEAPONS is a plain object literal, so `ROSTER['toString']` and
+   * `ROSTER['constructor']` are both truthy — they come off Object.prototype.
+   * That matters because a kind is no longer only ever produced by the
+   * carousel: loadPick() reads one back out of localStorage, which is a string
+   * this file did not write and cannot vouch for. Without this set a saved
+   * pick of "toString" walks straight through every roster guard and puts the
+   * player on a character that does not exist — no ship art, no variants, and
+   * silently the default weapon. input.js guards its own string-keyed tables
+   * exactly this way and for exactly this reason. */
+  const IS_KIND = Object.create(null);
+  (function indexRosterKinds() {
+    const own = Object.prototype.hasOwnProperty;
+    for (const key in ROSTER) {
+      if (own.call(ROSTER, key) && ROSTER[key]) IS_KIND[key] = true;
+    }
+  })();
+
+  /** True only for a string that names a real row of the roster. */
+  function isKind(kind) {
+    return typeof kind === 'string' && IS_KIND[kind] === true;
+  }
+
+  /** The roster row for a kind, falling back to the default character's. */
+  function charRow(kind) {
+    return (isKind(kind) ? ROSTER[kind] : null) || ROSTER[KIND_DEFAULT] || null;
+  }
+
+  /** A kind guaranteed to name a roster row. */
+  function normalizeKind(kind) {
+    return isKind(kind) ? kind : KIND_DEFAULT;
+  }
+
+  /** Carousel position of a kind (0 for anything off the roster). */
+  function charIndex(kind) {
+    const i = ROSTER_ORDER.indexOf(kind);
+    return i < 0 ? 0 : i;
+  }
+
+  /** The kind `steps` places along the carousel, wrapping both ways. */
+  function cycleKind(kind, steps) {
+    const n = ROSTER_ORDER.length;
+    if (n === 0) return kind;
+    return ROSTER_ORDER[((charIndex(kind) + steps) % n + n) % n];
+  }
+
+  /* =========================================================================
+   * COSMETIC VARIANTS  (SPEC-VARIANTS.md §1)
+   *
+   * Every character has three variants, for 27 playable versions. A variant is
+   * carried as an INDEX on the ship — `ship.variant`, 0..2 — riding beside
+   * `ship.kind` from the select screen through board creation, death, respawn,
+   * wave change and weapon pickup, and it survives all of them because it is
+   * stamped on the ship once and nothing ever takes it off.
+   *
+   * A VARIANT CHANGES IDENTITY, NEVER NUMBERS. Nothing below returns anything
+   * but a sprite name or an id: no speed, no hitbox, no refire, no carve
+   * radius. That is what lets all 27 versions inherit the +/-20% balance band
+   * the nine characters were measured into over 720 seeded runs, instead of
+   * turning that guarantee into a 27-way problem — and it is asserted, not
+   * assumed: scratchpad/game-variants.js drives all three variants of each
+   * character down identical seeded boards with identical input and requires
+   * the ship, its projectiles and the formation to match frame for frame.
+   *
+   * The index is CLAMPED into range exactly the way weapons.js clamps it, so a
+   * ship can never be wearing one variant's body and firing another's shot.
+   * ====================================================================== */
+
+  /** This character's variant rows, or null if its roster row carries none. */
+  function variantList(kind) {
+    const row = charRow(kind);
+    const list = row && row.variants;
+    return (list && list.length > 0) ? list : null;
+  }
+
+  /** How many variants a character has (1 for a row with no variant data). */
+  function variantCount(kind) {
+    const list = variantList(kind);
+    return list ? list.length : 1;
+  }
+
+  /**
+   * A variant index guaranteed to name one of this character's variants.
+   * Clamped rather than wrapped, and deliberately identical to weapons.js's
+   * own clamp: a ship built by a harness (or restored from an older save)
+   * carries no variant at all and is variant 0 — the default, which looks
+   * exactly like the game did before variants existed.
+   */
+  function normalizeVariant(kind, n) {
+    if (typeof n !== 'number' || !isFinite(n)) return 0;
+    return U.clamp(n | 0, 0, variantCount(kind) - 1);
+  }
+
+  /** The variant `steps` places along this character's three, wrapping. */
+  function cycleVariant(kind, n, steps) {
+    const count = variantCount(kind);
+    const i = normalizeVariant(kind, n) + steps;
+    return ((i % count) + count) % count;
+  }
+
+  /** The variant ROW — identity fields only — or null. */
+  function variantRow(kind, n) {
+    const list = variantList(kind);
+    return list ? list[normalizeVariant(kind, n)] : null;
+  }
+
+  /** `<kind>.<n>`, the id SPEC-VARIANTS §2 gives every variant. */
+  function variantIdOf(kind, n) {
+    const v = variantRow(kind, n);
+    if (v && v.id) return v.id;
+    return normalizeKind(kind) + '.' + normalizeVariant(kind, n);
+  }
+
+  /**
+   * `name` re-skinned for variant index `vi`.
+   *
+   * Variant 0 is the plain sprite by definition, so it short-circuits and the
+   * default look goes down byte-for-byte the path it always did. sprites.js
+   * caches the derived name, so a render loop asking for one allocates
+   * nothing; a sprite with no variant at that index (the charred-toast death
+   * frames, every shared FX sprite) comes back unchanged, and a sprites.js
+   * without the variant pipeline degrades to the plain name rather than
+   * throwing out of the middle of a frame.
+   */
+  function variantSprite(name, vi) {
+    if (!name || !vi) return name;
+    const S = T.Sprites;
+    if (!S || typeof S.variantName !== 'function') return name;
+    try {
+      return S.variantName(name, vi);
+    } catch (err) {
+      return name;
+    }
+  }
+
+  /** True when sprites.js has actually rasterized `name`. */
+  function spriteReady(name) {
+    const S = T.Sprites;
+    if (!name) return false;
+    if (!S || typeof S.has !== 'function') return true;   // can't tell: trust it
+    return !!S.has(name);
+  }
+
+  /* Resolved once per kind AND VARIANT, then interned: the render loop looks a
+   * character's frames up, it never builds a string (§12) — which is exactly
+   * why the cache is two levels of plain array/object lookup rather than a
+   * composed 'bread~1' key. Sprites are a sibling file, so a character (or a
+   * variant of one) whose art has not been rasterized falls back rather than
+   * throwing out of the middle of a frame. */
+  const shipFrameCache = Object.create(null);
+  const deathFrameCache = Object.create(null);
+  const FALLBACK_FRAMES = ['bread0', 'bread1'];
+
+  /**
+   * Swap a resolved frame pair for its variant's, when that variant really has
+   * been rasterized. Returns the pair unchanged for variant 0, for a sprite
+   * with no variant (the shared death frames) and for a half-built sprite
+   * table — so this can never be the reason a ship stops being drawn.
+   */
+  function variantFrames(frames, vi) {
+    if (!vi) return frames;
+    const a = variantSprite(frames[0], vi);
+    const b = variantSprite(frames[1], vi);
+    if (a === frames[0] && b === frames[1]) return frames;
+    /* ALL OR NOTHING. variantSprite() hands back the PLAIN name for a frame
+     * that has no art at this index, so taking the pair a frame at a time
+     * could pair a re-skinned idle with a base recoil — a ship that changes
+     * colour every time it fires, which reads as a bug in a way a variant
+     * that quietly did not apply does not. sprites.js rasterizes a variant's
+     * two body frames together or throws, so this only ever bites a half-built
+     * sprite table, and it bites it the harmless way. */
+    if (a === frames[0] || b === frames[1]) return frames;
+    if (!spriteReady(a) || !spriteReady(b)) return frames;
+    return [a, b];
+  }
+
+  /** [idle, firing-recoil] ship sprites for a character wearing `variant`. */
+  function shipFrames(kind, variant) {
+    const k = normalizeKind(kind);
+    const vi = normalizeVariant(k, variant);
+    let byVariant = shipFrameCache[k];
+    if (!byVariant) { byVariant = []; shipFrameCache[k] = byVariant; }
+    const cached = byVariant[vi];
+    if (cached) return cached;
+
+    const row = charRow(k);
+    let frames = row && row.ship ? [row.ship, row.shipFire || row.ship]
+                                 : FALLBACK_FRAMES;
+    if (!spriteReady(frames[0]) || !spriteReady(frames[1])) frames = FALLBACK_FRAMES;
+    frames = variantFrames(frames, vi);
+    byVariant[vi] = frames;
+    return frames;
+  }
+
+  /**
+   * [frame 0, frame 1] of a character's death animation, in its variant.
+   *
+   * Charred toast is charred toast: the shared 'boomPlayer' pair has no
+   * per-variant colouring, so a variant burns exactly like the default —
+   * but a roster row that DOES carry its own `death` frames gets them
+   * re-skinned, which is the whole reason this resolves through the same
+   * path the living ship does.
+   */
+  function deathFrames(kind, variant) {
+    const k = normalizeKind(kind);
+    const vi = normalizeVariant(k, variant);
+    let byVariant = deathFrameCache[k];
+    if (!byVariant) { byVariant = []; deathFrameCache[k] = byVariant; }
+    const cached = byVariant[vi];
+    if (cached) return cached;
+
+    const row = charRow(k);
+    const own = row && row.death;
+    let frames = (own && spriteReady(own[0]) && spriteReady(own[1]))
+      ? own : DEATH_SPRITES;
+    frames = variantFrames(frames, vi);
+    byVariant[vi] = frames;
+    return frames;
+  }
+
+  /* The jam jar's weapon id, read off its roster row. §4's "jam beats a bomb
+   * 75% of the time" is a property of that ONE weapon, so the collision pass
+   * compares against this instead of a literal spelled out mid-loop. */
+  const JAM_WID = (ROSTER.jam && ROSTER.jam.wid) || 'jam';
+
+  /* =========================================================================
+   * SPRITE NAME RESOLUTION
+   * entities.js may describe an enemy/bomb type as an index or as a name; both
+   * are accepted so the two files can't disagree about spelling.
+   * ====================================================================== */
+  const ENEMY_LETTERS = ['A', 'B', 'C'];
+  const BOMB_TYPE_NAMES = ['crumb', 'spark', 'flyingToast'];
+
+  /** 'toastA0'-style sprite key for an enemy at the given wing frame. */
+  function enemySprite(e, wingFrame) {
+    // entities.js owns the naming; only fall back if it has no helper.
+    const E = T.Entities;
+    if (E && typeof E.enemySprite === 'function') return E.enemySprite(e, wingFrame);
+
+    let letter = 'B';
+    const t = e.type;
+    if (typeof t === 'number') {
+      letter = ENEMY_LETTERS[U.clamp(t, 0, 2) | 0];
+    } else if (typeof t === 'string' && t.length > 0) {
+      const up = t.charAt(t.length - 1).toUpperCase();
+      if (up === 'A' || up === 'B' || up === 'C') letter = up;
+    } else {
+      // Fall back to the row → body-type mapping from §7.
+      letter = e.row === 0 ? 'A' : (e.row <= 2 ? 'B' : 'C');
+    }
+    return 'toast' + letter + wingFrame;
+  }
+
+  /** Index 0..2 for a bomb whose type may be an index or a spec name. */
+  function bombTypeIndex(type) {
+    if (typeof type === 'number') return U.clamp(type, 0, 2) | 0;
+    const i = BOMB_TYPE_NAMES.indexOf(type);
+    return i < 0 ? 0 : i;
+  }
+
+  function bombSprite(b) {
+    const E = T.Entities;
+    if (E && typeof E.bombSprite === 'function') return E.bombSprite(b);
+    return 'bomb' + bombTypeIndex(b.type) + (b.frame ? 'b' : 'a');
+  }
+
+  /* -------------------------------------------------------------------------
+   * DEBRIS PRESETS
+   * entities.js ships a tuned FX table; these locals are the fallback so this
+   * file never reads a sibling at LOAD time (§1) and never allocates an options
+   * object per explosion.
+   * ---------------------------------------------------------------------- */
+  const FX_FALLBACK = {
+    crumb:  { count: 14, color: PAL.crumb,    speed: 190, life: 0.55, gravity: 520, size: 3 },
+    butter: { count: 10, color: PAL.butter,   speed: 150, life: 0.45, gravity: 620, size: 3 },
+    jam:    { count: 12, color: PAL.jamRed,   speed: 170, life: 0.50, gravity: 700, size: 2 },
+    chrome: { count: 16, color: PAL.chromeLt, speed: 210, life: 0.60, gravity: 480, size: 3 },
+    burnt:  { count: 18, color: PAL.burnt,    speed: 200, life: 0.75, gravity: 540, size: 3 }
+  };
+
+  /** Shared burst preset by name, preferring the one entities.js publishes. */
+  function fx(name) {
+    const table = T.Entities && T.Entities.FX;
+    const preset = table && table[name];
+    return preset || FX_FALLBACK[name] || FX_FALLBACK.crumb;
+  }
+
+  /* A splash of debris in the SHOT'S OWN colour. With nine base weapons plus
+   * fifteen upgrades there is no longer a two-way butter/jam choice to make
+   * here: the shape of the burst comes from the shared 'butter' preset and the
+   * colour comes off the projectile, which weapons.js stamped from the roster.
+   * One object, reused for every splash, so the collision path allocates
+   * nothing (§12). */
+  const shotDebris = {
+    count: 10, color: PAL.butter, speed: 150, spread: Math.PI * 2,
+    life: 0.45, gravity: 620, size: 3, drag: 1.6
+  };
+
+  function burstShot(board, s, x, y) {
+    const preset = fx('butter');
+    shotDebris.count = preset.count;
+    shotDebris.speed = preset.speed;
+    shotDebris.spread = preset.spread;
+    shotDebris.life = preset.life;
+    shotDebris.gravity = preset.gravity;
+    shotDebris.size = preset.size;
+    shotDebris.drag = preset.drag;
+    shotDebris.color = (s && s.color) || preset.color;
+    burst(board, x, y, shotDebris);
+  }
+
+  /* =========================================================================
+   * BOARD CONSTRUCTION
+   * ====================================================================== */
+
+  /** Where a ship starts / respawns, spread apart when two share a board. */
+  function spawnX(slot, shipCount) {
+    if (shipCount < 2) return Math.round((C.W - C.SHIP_W) / 2);
+    return Math.round((slot === 0 ? C.W * 0.34 : C.W * 0.66) - C.SHIP_W / 2);
+  }
+
+  /**
+   * Build (or rebuild) the 11x5 formation for board.wave.
+   * Wave N starts FORM_START_Y + (N-1)*18 px down, capped at BUNKER_Y - 200.
+   * Enemies are stored row-major so `enemies[row * COLS + col]` is the grid.
+   */
+  function buildFormation(board) {
+    const startY = Math.min(C.FORM_START_Y + (board.wave - 1) * WAVE_Y_STEP, WAVE_Y_CAP);
+    const list = board.enemies;
+    list.length = 0;
+    for (let row = 0; row < C.ROWS; row++) {
+      for (let col = 0; col < C.COLS; col++) {
+        const e = T.Entities.makeEnemy(row, col);
+        if (typeof e.w !== 'number') e.w = 56;
+        if (typeof e.h !== 'number') e.h = 34;
+        // The game owns formation geometry, so positions are authored here and
+        // the sprite is centred inside its grid cell.
+        e.x = Math.round(C.FORM_START_X + col * C.CELL_W + (C.CELL_W - e.w) / 2);
+        e.y = Math.round(startY + row * C.CELL_H);
+        e.alive = true;
+        if (typeof e.points !== 'number') e.points = C.SCORE_ROW[row];
+        list.push(e);
+      }
+    }
+    board.aliveCount = list.length;
+    board.dir = 1;
+    board.frameIdx = 0;
+    board.stepInterval = U.stepInterval(board.aliveCount, board.wave);
+    board.stepT = board.stepInterval;
+  }
+
+  /**
+   * Fresh, undamaged shields — done at board creation and every wave clear.
+   * Existing bunkers are reset in place (each owns an offscreen canvas, so
+   * rebuilding them every wave would leak four canvases a wave).
+   */
+  function restoreBunkers(board) {
+    const E = T.Entities;
+    const list = board.bunkers;
+    const bw = E.BUNKER_W || BUNKER_W;
+    const gap = (C.W - BUNKER_COUNT * bw) / (BUNKER_COUNT + 1);
+
+    for (let i = 0; i < BUNKER_COUNT; i++) {
+      const x = Math.round(gap + i * (bw + gap));
+      let b = list[i];
+      if (b && typeof E.resetBunker === 'function') {
+        b.x = x;
+        b.y = C.BUNKER_Y;
+        E.resetBunker(b);
+        continue;
+      }
+      b = E.makeBunker(x, C.BUNKER_Y);
+      if (typeof b.x !== 'number') b.x = x;
+      if (typeof b.y !== 'number') b.y = C.BUNKER_Y;
+      if (typeof b.w !== 'number') b.w = bw;
+      if (typeof b.h !== 'number') b.h = E.BUNKER_H || BUNKER_H;
+      list[i] = b;
+    }
+    list.length = BUNKER_COUNT;
+  }
+
+  /**
+   * Create a board for the given player slots, starting at `wave`.
+   *
+   * `kinds` and `variants` are slot-keyed maps from the select screen: the
+   * character each player picked and, beside it, the cosmetic variant of that
+   * character they picked. Both are carried onto the ship, and the variant is
+   * carried NOWHERE else — it never reaches a number.
+   */
+  function createBoard(playerSlots, wave, kinds, variants) {
+    const board = {
+      slots: playerSlots.slice(),
+      ships: [],
+      enemies: [],
+      bombs: [],
+      ufo: null,
+      bunkers: [],
+      particles: T.Entities.makeParticleSystem(),
+      booms: [],
+      popups: [],
+
+      // --- weapon upgrade loop (SPEC-WEAPONS §5) ------------------------
+      shots: [],                 // every projectile, whoever fired it
+      crate: null,               // the winged utensil drawer, or null
+      token: null,               // the tumbling weapon token, or null
+      crateT: C.CRATE_FIRST_GAP, // seconds until the next drawer sails in
+      crateSide: -1,             // last entry side; flipped before each spawn
+      slowT: 0,                  // seconds of syrup left on the formation
+      pickup: null,              // live pickup banner, or null
+
+      // --- BACON STRIP's burning trail (SPEC-CHARACTERS §3) --------------
+      // The embers a rasher lays behind it, as a per-BOARD list: in classic
+      // mode each board burns its own, and in co-op both players feed this
+      // one. weapons.js lights the segments, ages them, collides them against
+      // the formation and draws them through a single pooled ticker shot; the
+      // list is created here with the board and put out here when the board
+      // moves on (wave change, death, game over) — see clearTrail().
+      baconTrail: [],
+      baconTicker: null,
+
+      wave: wave,
+      dir: 1,
+      stepT: 0,
+      stepInterval: U.stepInterval(C.TOTAL_ENEMIES, wave),
+      frameIdx: 0,
+      bombT: C.BOMB_COOLDOWN,
+      bombType: 0,
+      ufoT: U.randRange(C.UFO_MIN_GAP, C.UFO_MAX_GAP),
+      over: false,
+      endT: 0,
+      clearT: 0,
+      aliveCount: 0,
+      stepped: false      // true only on the frame the formation marched
+    };
+
+    // Fixed-size FX slots: reused forever, so the hot loop never allocates.
+    for (let i = 0; i < BOOM_SLOTS; i++) board.booms.push({ x: 0, y: 0, t: 0, active: false });
+    for (let i = 0; i < POPUP_SLOTS; i++) board.popups.push({ x: 0, y: 0, t: 0, text: '', color: PAL.ui, active: false });
+
+    for (let i = 0; i < playerSlots.length; i++) {
+      const slot = playerSlots[i];
+      const kind = normalizeKind(kinds[slot]);
+      const variant = normalizeVariant(kind, variants ? variants[slot] : 0);
+      const ship = T.Entities.makeShip(slot, kind);
+      // entities.js still only knows the two original kinds, so the character
+      // the player actually picked is stamped on afterwards — ship.kind is the
+      // roster id everything else (sprites, life icons, HUD chip) keys off.
+      ship.kind = kind;
+      // SPEC-VARIANTS §1: and beside it, the variant of that character. This
+      // is the ONLY place a ship's variant is set, and nothing ever clears it,
+      // which is what makes it survive a death and respawn, a wave change, and
+      // picking an upgrade token up and running it dry. weapons.js re-reads it
+      // off the ship at every shot rather than copying it into the weapon
+      // state, so reverting to the base weapon returns this character AND this
+      // skin. Cosmetic: the ship's speed, hitbox and base weapon below are
+      // resolved from `kind` alone and cannot see `variant` at all.
+      ship.variant = variant;
+      ship.variantId = variantIdOf(kind, variant);
+      if (typeof ship.w !== 'number') ship.w = C.SHIP_W;
+      if (typeof ship.h !== 'number') ship.h = C.SHIP_H;
+      ship.slot = slot;
+      ship.x = spawnX(slot, playerSlots.length);
+      ship.y = C.SHIP_Y;
+      ship.lives = C.LIVES;
+      ship.score = 0;
+      ship.alive = true;
+      ship.dead = false;
+      ship.out = false;
+      ship.deathT = 0;
+      ship.respawnT = 0;
+      ship.spawnInvuln = SPAWN_INVULN;
+      ship.shot = null;
+      ship.frame = 0;
+      ship.fireT = 0;
+      ship.extraGiven = false;      // EXTRA_LIFE_AT is awarded once per ship
+      ship.pendingRespawn = false;  // classic: waiting for this player's turn
+      ship.fireHeld = false;        // §5: the attached weapons need the HOLD
+      ship.fireBufferT = 0;         // remembered FIRE edge (see FIRE_BUFFER)
+      // SPEC-CHARACTERS §6: the starting weapon is THIS character's base
+      // weapon, resolved through the roster — nine kinds, nine base weapons,
+      // and an upgrade token later reverts to exactly this one.
+      T.Weapons.equip(ship, T.Weapons.baseFor(kind));
+      board.ships.push(ship);
+    }
+
+    // weapons.js kills outside the plain shot x enemy pass (the mega-jam splash,
+    // the baguette lance, the microwave beam). These hooks hand those kills back
+    // here so scoring, popups and explosions stay in ONE place.
+    board.weaponKill = function (enemy, shot) {
+      killEnemy(board, enemy, shot && shot.owner);
+    };
+    board.weaponKillUfo = function (ufo, shot) {
+      scoreUfo(board, shot && shot.owner);
+    };
+
+    buildFormation(board);
+    restoreBunkers(board);
+    return board;
+  }
+
+  /* =========================================================================
+   * SMALL BOARD HELPERS
+   * ====================================================================== */
+
+  function boom(board, cx, cy) {
+    const list = board.booms;
+    for (let i = 0; i < list.length; i++) {
+      if (!list[i].active) {
+        list[i].active = true;
+        list[i].t = 0;
+        list[i].x = cx;
+        list[i].y = cy;
+        return;
+      }
+    }
+  }
+
+  function popup(board, x, y, text, color) {
+    const list = board.popups;
+    for (let i = 0; i < list.length; i++) {
+      if (!list[i].active) {
+        list[i].active = true;
+        list[i].t = 0;
+        list[i].x = x;
+        list[i].y = y;
+        list[i].text = text;
+        list[i].color = color || PAL.ui;
+        return;
+      }
+    }
+  }
+
+  function burst(board, x, y, opts) {
+    const p = board.particles;
+    if (p && typeof p.spawn === 'function') p.spawn(x, y, opts);
+  }
+
+  function killShot(s) {
+    if (!s) return;
+    s.alive = false;
+    if (s.owner && s.owner.shot === s) s.owner.shot = null;
+  }
+
+  /**
+   * Attached weapons (the baguette lance, the microwave beam) carry a
+   * deliberately EMPTY collision rect and run their own column sweep inside
+   * weapons.js. The generic shot passes below must skip them, or a beam would
+   * chew the bunker it is standing behind and burst a crate on touch.
+   */
+  function isSolidShot(s) {
+    return !!s && s.alive && !s.attached && s.w > 0 && s.h > 0;
+  }
+
+  /**
+   * Hand every projectile on this board back to the weapon pool and forget it.
+   * A microwave beam gives up its hum reference on the way out, which is what
+   * makes the sound stop dead on a wave clear, a board end or a game over.
+   *
+   * The bacon trail's ticker is one of those projectiles, so its embers are
+   * put out in the same breath — otherwise a wave change would leave a cold
+   * minefield sitting over the next formation's spawn.
+   */
+  function clearShots(board) {
+    const list = board.shots;
+    if (list) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const s = list[i];
+        list.splice(i, 1);
+        T.Weapons.retireShot(s);
+      }
+    }
+    for (let i = 0; i < board.ships.length; i++) board.ships[i].shot = null;
+    clearTrail(board);
+  }
+
+  /**
+   * Drop only the attached lance / beam. Used when the board freezes but its
+   * projectiles should stay put (pause) — a held beam is the one shot that
+   * would otherwise keep humming over a stopped game.
+   */
+  function dropAttached(board) {
+    const list = board.shots;
+    if (!list) return;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const s = list[i];
+      if (!s.attached) continue;
+      list.splice(i, 1);
+      T.Weapons.retireShot(s);
+    }
+    for (let i = 0; i < board.ships.length; i++) board.ships[i].fireHeld = false;
+  }
+
+  /**
+   * Put the BACON STRIP's embers out (SPEC-CHARACTERS §3).
+   *
+   * With no argument the whole board's trail goes cold and its ticker handle
+   * is dropped — that is the wave change, the board end and the game over.
+   * With a ship, only THAT ship's embers go: a co-op death must not take the
+   * other player's minefield with it, and a segment outliving the rasher that
+   * lit it is the whole point of the weapon.
+   */
+  function clearTrail(board, ship) {
+    const list = board && board.baconTrail;
+    if (!list) return;
+
+    if (!ship) {
+      // weapons.js owns the segment shape, so let it put out its own embers
+      // when it can; the walk is the fallback for a half-loaded sibling.
+      const W = T.Weapons;
+      if (W && typeof W.clearTrail === 'function') W.clearTrail(board);
+      else for (let i = 0; i < list.length; i++) list[i].active = false;
+      board.baconTicker = null;
+      return;
+    }
+
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].owner === ship) list[i].active = false;
+    }
+  }
+
+  /** Every board in the session goes cold — the game is over, or we quit. */
+  function clearAllTrails() {
+    const s = Game.session;
+    if (!s || !s.boards) return;
+    for (let i = 0; i < s.boards.length; i++) clearTrail(s.boards[i]);
+  }
+
+  /** Clear the whole crate → token loop: wave change, board end, quit. */
+  function clearPickups(board) {
+    board.crate = null;
+    board.token = null;
+    board.crateT = C.CRATE_FIRST_GAP;
+    board.slowT = 0;
+  }
+
+  /** Stop the bonus toaster AND its siren in one place, always together. */
+  function killUfo(board) {
+    if (board.ufo) {
+      board.ufo.alive = false;
+      board.ufo = null;
+    }
+    sirenStop();
+  }
+
+  function anyShipAlive(board) {
+    for (let i = 0; i < board.ships.length; i++) {
+      const s = board.ships[i];
+      if (s.alive && !s.out) return true;
+    }
+    return false;
+  }
+
+  function allShipsOut(board) {
+    for (let i = 0; i < board.ships.length; i++) {
+      if (!board.ships[i].out) return false;
+    }
+    return true;
+  }
+
+  /** Lowest ALIVE enemy in a column, or null when the column is empty. */
+  function lowestInColumn(board, col) {
+    for (let row = C.ROWS - 1; row >= 0; row--) {
+      const e = board.enemies[row * C.COLS + col];
+      if (e && e.alive) return e;
+    }
+    return null;
+  }
+
+  /* =========================================================================
+   * SCORING
+   * ====================================================================== */
+  function addScore(board, ship, points, x, y) {
+    if (!ship) return;
+    ship.score += points;
+    if (ship.score > Game.hiScore) {
+      Game.hiScore = ship.score;
+      hiDirty = true;
+    }
+    // §3: one extra life per ship, the first time it crosses EXTRA_LIFE_AT.
+    if (!ship.extraGiven && ship.score >= C.EXTRA_LIFE_AT) {
+      ship.extraGiven = true;
+      ship.lives += 1;
+      sfx('extraLife');
+      popup(board, x !== undefined ? x : ship.x + ship.w / 2,
+            y !== undefined ? y : ship.y - 20, '1UP',
+            ship.slot === 0 ? PAL.p1 : PAL.p2);
+    }
+  }
+
+  let hiDirty = false;
+  let hiSaveT = 0;
+
+  function persistHi() {
+    U.storeSet(HI_KEY, Game.hiScore);
+    hiDirty = false;
+  }
+
+  /* =========================================================================
+   * PLAY-STATE UPDATE — the per-frame order is exactly §9's list
+   * ====================================================================== */
+
+  /* 1 + 2: read input, move ships, handle fire, run death / respawn timers. */
+  function updateShips(board, dt) {
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (ship.out) continue;
+
+      if (ship.dead) {
+        ship.deathT += dt;
+        if (ship.deathT >= C.SHIP_RESPAWN_DELAY) finishDeath(board, ship);
+        continue;
+      }
+      if (!ship.alive) continue;
+
+      if (ship.spawnInvuln > 0) ship.spawnInvuln = Math.max(0, ship.spawnInvuln - dt);
+      if (ship.fireT > 0) {
+        ship.fireT -= dt;
+        if (ship.fireT <= 0) ship.frame = 0;
+      }
+
+      // Ammo / duration clock. Reverts the ship to its base weapon when spent.
+      T.Weapons.tick(ship, dt);
+
+      const p = pad(ship.slot);
+      if (!p) { ship.fireHeld = false; continue; }
+
+      let ax = p.axisX || 0;
+      if (p.left) ax -= 1;
+      if (p.right) ax += 1;
+      ax = U.clamp(ax, -1, 1);
+
+      ship.x += ax * C.SHIP_SPEED * dt;
+      ship.x = U.clamp(ship.x, C.FORM_MARGIN, C.W - C.FORM_MARGIN - ship.w);
+      ship.y = C.SHIP_Y;
+
+      /* SPEC-WEAPONS §5: firing goes through the weapon layer.
+       * The base weapons keep the classic one-tap-one-shot feel, so they only
+       * answer the rising edge; an upgrade fires on its own fireDelay for as
+       * long as the trigger is down. fireHeld is what the attached weapons —
+       * the microwave beam and the baguette lance — watch to know when to end. */
+      ship.fireHeld = !!p.fire;
+
+      // A base weapon's rising edge is REMEMBERED, so a tap that arrives during
+      // a `refire` lockout still fires the moment the lockout lifts instead of
+      // being thrown away. The window is this weapon's own lockout plus a
+      // little slack, which is exactly long enough for a press made at the
+      // start of the lockout to survive it and no longer. The buffer is spent
+      // by the shot it produces and only a NEW press refills it, so holding the
+      // trigger still yields exactly one shot — the classic rule is untouched.
+      const def = ship.weapon && ship.weapon.def;
+      const lockout = (def && def.base && def.refire > 0) ? def.refire : 0;
+      if (p.firePressed) ship.fireBufferT = lockout + FIRE_BUFFER;
+      else if (ship.fireBufferT > 0) ship.fireBufferT = Math.max(0, ship.fireBufferT - dt);
+
+      const wantsFire = (def && !def.base) ? p.fire : ship.fireBufferT > 0;
+      if (wantsFire && T.Weapons.canFire(ship, board)) {
+        if (T.Weapons.fire(ship, board)) ship.fireBufferT = 0;
+      }
+    }
+  }
+
+  /* 3: advance shots and bombs. Every projectile — base pat of butter or
+   * ricocheting pancake — moves through T.Weapons.updateShot, which owns the
+   * per-mechanic motion and hands spent shots back to its pool. */
+  function updateShots(board, dt) {
+    const list = board.shots;
+    if (!list) return;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const s = list[i];
+      if (T.Weapons.updateShot(s, dt, board)) continue;
+      list.splice(i, 1);
+      if (s.owner && s.owner.shot === s) s.owner.shot = null;
+    }
+  }
+
+  function updateBombs(board, dt) {
+    const bombs = board.bombs;
+    for (let i = bombs.length - 1; i >= 0; i--) {
+      const b = bombs[i];
+      if (!b.alive) { bombs.splice(i, 1); continue; }
+      b.y += b.vy * dt;
+      b.animT += dt;
+      if (b.animT >= BOMB_ANIM) {
+        b.animT = 0;
+        b.frame = b.frame ? 0 : 1;
+      }
+    }
+  }
+
+  /* 4: the formation march — a whole-unit step on a timer, never continuous. */
+  function updateFormation(board, dt) {
+    board.stepped = false;
+    if (board.slowT > 0) board.slowT = Math.max(0, board.slowT - dt);
+
+    board.stepInterval = U.stepInterval(board.aliveCount, board.wave);
+    // SPEC-WEAPONS §5: syrup DIVIDES the interval by SYRUP_SLOW_FACTOR, which
+    // lengthens it — a syruped formation marches slower, it does not speed up.
+    if (board.slowT > 0) board.stepInterval /= C.SYRUP_SLOW_FACTOR;
+    if (board.stepInterval !== lastTempo) {
+      lastTempo = board.stepInterval;
+      marchTempo(board.stepInterval);
+    }
+
+    board.stepT -= dt;
+    if (board.stepT > 0) return;
+    board.stepT += board.stepInterval;
+    if (board.stepT < 0) board.stepT = board.stepInterval;
+
+    // Would the whole unit cross the turn margin on this step?
+    let minX = Infinity;
+    let maxX = -Infinity;
+    const list = board.enemies;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!e.alive) continue;
+      if (e.x < minX) minX = e.x;
+      if (e.x + e.w > maxX) maxX = e.x + e.w;
+    }
+    if (minX === Infinity) return;   // nothing left to march
+
+    const step = C.FORM_STEP_X * board.dir;
+    const hitsWall = board.dir > 0
+      ? (maxX + C.FORM_STEP_X > C.W - C.FORM_MARGIN)
+      : (minX - C.FORM_STEP_X < C.FORM_MARGIN);
+
+    if (hitsWall) {
+      board.dir = -board.dir;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].alive) list[i].y += C.FORM_STEP_Y;
+      }
+    } else {
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].alive) list[i].x += step;
+      }
+    }
+
+    // Wings flap once per step, so they beat faster as the field thins out.
+    board.frameIdx = (board.frameIdx + 1) % C.FRAME_CYCLE.length;
+    board.stepped = true;
+    marchTempo(board.stepInterval);
+  }
+
+  /* 5: bonus toaster timer + motion. */
+  function updateUfo(board, dt) {
+    if (board.ufo) {
+      const u = board.ufo;
+      u.x += u.vx * dt;
+      if (u.x > C.W + 4 || u.x + u.w < -4) killUfo(board);
+      return;
+    }
+
+    board.ufoT -= dt;
+    if (board.ufoT > 0) return;
+    board.ufoT = U.randRange(C.UFO_MIN_GAP, C.UFO_MAX_GAP);
+    if (board.aliveCount < UFO_MIN_ALIVE) return;   // arcade: no pass on a thin field
+
+    const dir = U.chance(0.5) ? 1 : -1;
+    const u = T.Entities.makeUfo(dir);
+    if (typeof u.w !== 'number') u.w = 76;
+    if (typeof u.h !== 'number') u.h = 34;
+    u.y = C.UFO_Y;
+    u.x = dir > 0 ? -u.w : C.W;
+    if (!u.vx || (u.vx > 0) !== (dir > 0)) u.vx = dir * C.UFO_SPEED;
+    if (typeof u.scoreIndex !== 'number') {
+      u.scoreIndex = U.randInt(0, C.UFO_SCORES.length - 1);
+    }
+    u.alive = true;
+    board.ufo = u;
+    sfx('ufoAppear');
+    sirenStart();
+  }
+
+  /* 5b: the winged utensil drawer — SPEC-WEAPONS §1. One crate at a time, the
+   * first CRATE_FIRST_GAP seconds into a wave and then every CRATE_GAP_MIN..MAX,
+   * entering from alternating sides. Nothing new sails in while a token is
+   * still falling: there is only ever one of each in the air. */
+  function updateCrate(board, dt) {
+    if (board.crate) {
+      if (!T.Weapons.updateCrate(board.crate, dt, board)) board.crate = null;
+      return;
+    }
+    if (board.token) return;
+    board.crateT -= dt;
+    if (board.crateT > 0) return;
+    board.crateT = U.randRange(C.CRATE_GAP_MIN, C.CRATE_GAP_MAX);
+    board.crateSide = -board.crateSide;
+    board.crate = T.Weapons.makeCrate(board.crateSide);
+  }
+
+  /* 5c: the token's fall. Reaching the floor only marks it dead here — the
+   * VERDICT (caught, or lost) is resolved in the collision order below. */
+  function updateToken(board, dt) {
+    if (board.token) T.Weapons.updateToken(board.token, dt, board);
+  }
+
+  /* 6: enemy fire — lowest alive toaster of a random occupied column. */
+  function updateBombSpawn(board, dt) {
+    board.bombT -= dt;
+    if (board.bombT > 0) return;
+    if (board.bombs.length >= C.MAX_BOMBS) return;
+    if (board.aliveCount === 0) return;
+    if (!anyShipAlive(board)) return;
+
+    // Choose among occupied columns without allocating: count, then pick.
+    let occupied = 0;
+    for (let col = 0; col < C.COLS; col++) {
+      if (lowestInColumn(board, col)) occupied++;
+    }
+    if (occupied === 0) return;
+
+    let n = U.randInt(0, occupied - 1);
+    let shooter = null;
+    for (let col = 0; col < C.COLS; col++) {
+      const e = lowestInColumn(board, col);
+      if (!e) continue;
+      if (n === 0) { shooter = e; break; }
+      n--;
+    }
+    if (!shooter) return;
+
+    const type = board.bombType;
+    board.bombType = (board.bombType + 1) % BOMB_TYPE_NAMES.length;   // cycle all 3
+
+    const b = T.Entities.makeBomb(shooter.x + shooter.w / 2, shooter.y + shooter.h, type);
+    if (typeof b.w !== 'number') b.w = 8;
+    if (typeof b.h !== 'number') b.h = 16;
+    if (typeof b.type !== 'number' && typeof b.type !== 'string') b.type = type;
+    if (typeof b.frame !== 'number') b.frame = 0;
+    if (typeof b.animT !== 'number') b.animT = 0;
+    if (!(b.vy > 0)) b.vy = U.randRange(C.BOMB_SPEED_MIN, C.BOMB_SPEED_MAX);
+    b.x = Math.round(shooter.x + shooter.w / 2 - b.w / 2);
+    b.y = Math.round(shooter.y + shooter.h - 6);
+    b.alive = true;
+    board.bombs.push(b);
+
+    board.bombT = C.BOMB_COOLDOWN * U.randRange(1, 1.7);
+  }
+
+  /* -------------------------------------------------------------------------
+   * 7: COLLISIONS — resolved in exactly the order §9 lists them.
+   * ---------------------------------------------------------------------- */
+  function resolveCollisions(board) {
+    shotsVsEnemies(board);
+    shotsVsUfo(board);
+    shotsVsCrate(board);
+    shotsVsBombs(board);
+    shotsVsBunkers(board);
+    shotsVsCeiling(board);
+
+    bombsVsShips(board);
+    bombsVsBunkers(board);
+    bombsVsFloor(board);
+
+    shipsVsToken(board);
+    tokenVsFloor(board);
+
+    enemiesVsBunkers(board);
+    enemiesVsShips(board);
+    enemiesVsFloorLine(board);
+  }
+
+  /**
+   * One toaster dies. Everything that follows from that — the explosion, the
+   * crumbs, the ding, the score — lives here, because weapons.js's splash and
+   * sweep mechanics kill through board.weaponKill and must land in exactly the
+   * same place as a plain shot. Idempotent: a toaster only dies once.
+   */
+  function killEnemy(board, e, owner) {
+    if (!e || !e.alive) return;
+    e.alive = false;
+    board.aliveCount--;
+
+    const cx = e.x + e.w / 2;
+    const cy = e.y + e.h / 2;
+    boom(board, cx, cy);
+    burst(board, cx, cy, fx('crumb'));
+    sfx('enemyHit');
+    addScore(board, owner, e.points, cx, cy);
+  }
+
+  /** The bonus toaster dies — and sometimes leaves a weapon token behind. */
+  function scoreUfo(board, owner) {
+    const u = board.ufo;
+    if (!u) return;
+    const cx = u.x + u.w / 2;
+    const cy = u.y + u.h / 2;
+    const pts = C.UFO_SCORES[U.clamp(u.scoreIndex, 0, C.UFO_SCORES.length - 1) | 0];
+
+    killUfo(board);
+    boom(board, cx, cy);
+    burst(board, cx, cy, fx('chrome'));
+    sfx('ufoHit');
+    addScore(board, owner, pts, cx, cy);
+    popup(board, cx, cy, String(pts), PAL.coilLt);
+
+    // SPEC-WEAPONS §5: the Chrome Deluxe is carrying cutlery a quarter of the time.
+    if (!board.token && U.chance(C.UFO_TOKEN_CHANCE)) {
+      board.token = T.Weapons.makeToken(cx, cy, T.Weapons.rollDrop());
+      sfx('tokenDrop');
+    }
+  }
+
+  function shotsVsEnemies(board) {
+    const shots = board.shots;
+    if (!shots) return;
+    const list = board.enemies;
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      if (!isSolidShot(s)) continue;
+      for (let k = 0; k < list.length; k++) {
+        const e = list[k];
+        if (!e.alive) continue;
+        // aabb reads s.w and s.h off the shot every single frame, which is what
+        // makes the MILK CARTON's growing splash real: weapons.js widens s.w as
+        // it climbs (step 3) and this test, run at step 7, sees the CURRENT
+        // width — never the one it launched with (SPEC-CHARACTERS §3).
+        if (!T.Entities.aabb(s, e)) continue;
+
+        // onHit runs the projectile's own side effects (the cannon's airburst,
+        // the mega-jam splash, the syrup slow) and decides whether the shot dies
+        // here or ploughs on through the row behind.
+        const verdict = T.Weapons.onHit(s, e, board);
+        killEnemy(board, e, s.owner);
+        if (verdict !== 'pierce') { killShot(s); break; }
+      }
+    }
+  }
+
+  function shotsVsUfo(board) {
+    const shots = board.shots;
+    if (!shots || !board.ufo) return;
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      if (!isSolidShot(s)) continue;
+      const u = board.ufo;
+      if (!u) return;
+      if (!T.Entities.aabb(s, u)) continue;
+
+      const verdict = T.Weapons.onHit(s, u, board);
+      scoreUfo(board, s.owner);
+      if (verdict !== 'pierce') killShot(s);
+      return;
+    }
+  }
+
+  /** Two hits burst the utensil drawer and a weapon token tumbles out of it. */
+  function shotsVsCrate(board) {
+    const shots = board.shots;
+    const crate = board.crate;
+    if (!shots || !crate || !crate.alive) return;
+
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      if (!isSolidShot(s)) continue;
+      if (!T.Entities.aabb(s, crate)) continue;
+
+      const cx = crate.x + crate.w / 2;
+      const cy = crate.y + crate.h / 2;
+      const opened = T.Weapons.hitCrate(crate, board);
+      const verdict = T.Weapons.onHit(s, crate, board);
+      if (verdict !== 'pierce') killShot(s);
+
+      if (!opened) continue;
+      // hitCrate drops the token itself when the board has room for one; this
+      // covers the case where it could not, so a burst is never wasted.
+      if (!board.token) {
+        board.token = T.Weapons.makeToken(cx, cy, T.Weapons.rollDrop());
+        sfx('tokenDrop');
+      }
+      board.crate = null;
+      boom(board, cx, cy);
+      return;
+    }
+  }
+
+  function shotsVsBombs(board) {
+    const shots = board.shots;
+    if (!shots) return;
+    const bombs = board.bombs;
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      if (!isSolidShot(s)) continue;
+      for (let k = bombs.length - 1; k >= 0; k--) {
+        const b = bombs[k];
+        if (!b.alive) continue;
+        if (!T.Entities.aabb(s, b)) continue;
+
+        // §4: the bomb always goes. Butter ploughs straight through; thin jam
+        // survives the exchange only 75% of the time. An upgrade follows its
+        // own mechanic instead — a knife pierces, a scattered loop is spent.
+        b.alive = false;
+        bombs.splice(k, 1);
+        const cx = b.x + b.w / 2;
+        const cy = b.y + b.h / 2;
+        burst(board, cx, cy, fx('crumb'));
+
+        if (!s.def || s.def.base) {
+          // Only the jam jar's thin glob loses the exchange, and only some of
+          // the time — every other base weapon ploughs on, as butter always
+          // has. Which weapon that is comes off its roster row, not a literal.
+          if (s.wid === JAM_WID && !U.chance(JAM_WIN_ODDS)) {
+            killShot(s);
+            burstShot(board, s, cx, cy);
+          }
+        } else if (T.Weapons.onHit(s, b, board) !== 'pierce') {
+          killShot(s);
+        }
+        if (!s.alive) break;
+      }
+    }
+  }
+
+  /**
+   * How wide a hole this shot chews in a shield.
+   *
+   * §4 makes the carve radius a WEAPON stat, and weapons.js stamps it onto
+   * every projectile from the roster's `dmg` column. Read it from the shot so
+   * the two files can never drift apart; the roster row (and then the two
+   * locals) are the fallback for a shot that arrived without one.
+   *
+   * A radius of ZERO is not "no radius" — it is the HONEY DIPPER, whose whole
+   * advantage is that it goes through your own cover (SPEC-CHARACTERS §3), so
+   * shotsVsBunkers skips that shot entirely rather than carving a 0px hole.
+   */
+  function carveRadius(s) {
+    if (typeof s.damageRadius === 'number') return s.damageRadius;
+    const row = ROSTER_BY_WID[s.wid];
+    if (row && typeof row.dmg === 'number') return row.dmg;
+    return s.wid === JAM_WID ? DMG_R_JAM : DMG_R_BUTTER;
+  }
+
+  function shotsVsBunkers(board) {
+    const shots = board.shots;
+    if (!shots) return;
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      if (!isSolidShot(s)) continue;
+
+      // Ask the WEAPON, not the character: a shot that does no shield damage
+      // does not interact with shields at all — it passes clean through and
+      // never even asks the bunker whether it was hit.
+      const r = carveRadius(s);
+      if (!(r > 0)) continue;
+
+      for (let k = 0; k < board.bunkers.length; k++) {
+        const bk = board.bunkers[k];
+        if (T.Entities.bunkerIsGone(bk)) continue;
+        if (!T.Entities.rectHitsBunker(bk, s.x, s.y, s.w, s.h)) continue;
+
+        T.Entities.damageBunker(bk, s.x + s.w / 2, s.y, r);
+        const verdict = T.Weapons.onHit(s, bk, board);
+        burstShot(board, s, s.x + s.w / 2, s.y);
+        sfx('bunkerHit');
+        if (verdict !== 'pierce') { killShot(s); break; }
+      }
+    }
+  }
+
+  function shotsVsCeiling(board) {
+    const shots = board.shots;
+    if (!shots) return;
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      if (!isSolidShot(s)) continue;
+      if (s.vy >= 0) continue;                 // only things still climbing
+      if (s.y + s.h <= C.PLAY_TOP) {
+        burstShot(board, s, s.x + s.w / 2, C.PLAY_TOP);
+        killShot(s);
+      }
+    }
+  }
+
+  /**
+   * Catching a token. Deliberately generous — TOKEN_MAGNET px of slop around
+   * the ship — and first come, first served: in co-op either player may take
+   * any token, which is the good kind of arguing.
+   */
+  function shipsVsToken(board) {
+    const token = board.token;
+    if (!token || !token.alive) return;
+
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (!T.Weapons.catchesToken(ship, token)) continue;
+
+      token.alive = false;
+      board.token = null;
+      T.Weapons.equip(ship, token.wid);
+      board.pickup = {
+        wid: token.wid,
+        def: token.def,
+        name: token.name,
+        tagline: token.def ? token.def.tagline : '',
+        color: token.color,
+        slot: ship.slot,
+        // Who caught it, and which version of them: the banner itself only
+        // names the player and the weapon today (T.UI owns its look), so this
+        // is the catcher's identity carried alongside `slot` and nothing more.
+        // It is the character AND the variant or neither — a half-identity is
+        // the thing that lets a banner draw the wrong skin later.
+        kind: ship.kind,
+        variant: ship.variant,
+        variantId: ship.variantId,
+        t: 0,
+        duration: PICKUP_BANNER_TIME,
+        remaining: PICKUP_BANNER_TIME
+      };
+      burst(board, token.x + token.w / 2, token.y + token.h / 2, fx('chrome'));
+      sfx('tokenGrab');
+      rumble(ship.slot, 220, 0.35, 0.8);
+      return;
+    }
+  }
+
+  /** Missed it. The token is gone and the cutlery clangs off the floor line. */
+  function tokenVsFloor(board) {
+    const token = board.token;
+    if (!token || token.alive) return;
+    board.token = null;
+    burst(board, token.x + token.w / 2, C.PLAY_BOTTOM, fx('chrome'));
+    sfx('tokenLost');
+  }
+
+  function bombsVsShips(board) {
+    const bombs = board.bombs;
+    for (let k = bombs.length - 1; k >= 0; k--) {
+      const b = bombs[k];
+      if (!b.alive) continue;
+      for (let i = 0; i < board.ships.length; i++) {
+        const ship = board.ships[i];
+        if (!ship.alive || ship.dead || ship.out || ship.spawnInvuln > 0) continue;
+        if (!T.Entities.aabb(b, ship)) continue;
+
+        b.alive = false;
+        bombs.splice(k, 1);
+        hitShip(board, ship);
+        break;
+      }
+    }
+  }
+
+  function bombsVsBunkers(board) {
+    const bombs = board.bombs;
+    for (let k = bombs.length - 1; k >= 0; k--) {
+      const b = bombs[k];
+      if (!b.alive) continue;
+      for (let j = 0; j < board.bunkers.length; j++) {
+        const bk = board.bunkers[j];
+        if (T.Entities.bunkerIsGone(bk)) continue;
+        if (!T.Entities.rectHitsBunker(bk, b.x, b.y, b.w, b.h)) continue;
+
+        T.Entities.damageBunker(bk, b.x + b.w / 2, b.y + b.h, DMG_R_BOMB);
+        b.alive = false;
+        bombs.splice(k, 1);
+        burst(board, b.x + b.w / 2, b.y + b.h, fx('crumb'));
+        sfx('bunkerHit');
+        break;
+      }
+    }
+  }
+
+  function bombsVsFloor(board) {
+    const bombs = board.bombs;
+    for (let k = bombs.length - 1; k >= 0; k--) {
+      const b = bombs[k];
+      if (!b.alive) continue;
+      if (b.y + b.h >= C.PLAY_BOTTOM) {
+        burst(board, b.x + b.w / 2, C.PLAY_BOTTOM, fx('crumb'));
+        b.alive = false;
+        bombs.splice(k, 1);
+      }
+    }
+  }
+
+  /**
+   * Classic behaviour: toasters chew the shields away as they march over them.
+   * Only bites on a march step — the formation is stationary between steps, and
+   * gnawing every frame would vaporise a bunker the instant one touched it.
+   */
+  function enemiesVsBunkers(board) {
+    if (!board.stepped) return;
+    const E = T.Entities;
+    const list = board.enemies;
+    for (let j = 0; j < board.bunkers.length; j++) {
+      const bk = board.bunkers[j];
+      if (E.bunkerIsGone(bk)) continue;
+      const top = bk.y;
+      const bottom = bk.y + bk.h;
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        if (!e.alive) continue;
+        if (e.y + e.h < top || e.y > bottom) continue;         // cheap band test
+        if (!E.rectHitsBunker(bk, e.x, e.y, e.w, e.h)) continue;
+        if (typeof E.erodeBunkerTop === 'function') {
+          E.erodeBunkerTop(bk, e.x, e.w);        // gnaw down from the top surface
+        } else {
+          E.damageBunker(bk, e.x + e.w * 0.5, e.y + e.h, DMG_R_ENEMY);
+        }
+      }
+    }
+  }
+
+  function enemiesVsShips(board) {
+    const list = board.enemies;
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (!ship.alive || ship.dead || ship.out) continue;
+      for (let k = 0; k < list.length; k++) {
+        const e = list[k];
+        if (!e.alive) continue;
+        if (!T.Entities.aabb(e, ship)) continue;
+        hitShip(board, ship);
+        break;
+      }
+    }
+  }
+
+  function enemiesVsFloorLine(board) {
+    const list = board.enemies;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!e.alive) continue;
+      if (e.y + e.h >= INVASION_Y) {
+        // §3: toasters this deep end the board on the spot.
+        for (let k = 0; k < board.ships.length; k++) {
+          const ship = board.ships[k];
+          ship.lives = 0;
+          ship.out = true;
+          ship.alive = false;
+          ship.dead = false;
+          killShot(ship.shot);
+        }
+        burst(board, e.x + e.w / 2, e.y + e.h, fx('burnt'));
+        sfx('playerDie');
+        endBoard(board);
+        return;
+      }
+    }
+  }
+
+  /* -------------------------------------------------------------------------
+   * DEATH / RESPAWN / TURN FLOW
+   * ---------------------------------------------------------------------- */
+  function hitShip(board, ship) {
+    ship.alive = false;
+    ship.dead = true;
+    ship.deathT = 0;
+    ship.frame = 0;
+    ship.fireT = 0;
+    ship.fireHeld = false;
+    killShot(ship.shot);
+    // SPEC-CHARACTERS §3: a burnt-out player leaves no minefield behind — only
+    // THIS ship's embers go out, so a co-op partner keeps theirs burning.
+    clearTrail(board, ship);
+    // SPEC-WEAPONS §5: an upgrade is LOST on death — that is the cost of dying.
+    // Reverting also drops any lance or beam the ship was holding up, so the
+    // microwave hum stops on the same frame the ship burns.
+    T.Weapons.revert(ship);
+    ship.lives = Math.max(0, ship.lives - 1);
+
+    boom(board, ship.x + ship.w / 2, ship.y + ship.h / 2);
+    burst(board, ship.x + ship.w / 2, ship.y + ship.h / 2, fx('burnt'));
+    sfx('playerDie');
+    rumble(ship.slot, 340, 0.9, 0.6);
+
+    // Never let the bonus siren keep singing over an empty board.
+    if (!anyShipAlive(board)) killUfo(board);
+  }
+
+  function respawnShip(board, ship) {
+    ship.alive = true;
+    ship.dead = false;
+    ship.deathT = 0;
+    ship.respawnT = 0;
+    ship.spawnInvuln = SPAWN_INVULN;
+    ship.frame = 0;
+    ship.fireT = 0;
+    ship.fireHeld = false;
+    ship.shot = null;
+    ship.pendingRespawn = false;
+    ship.x = spawnX(ship.slot, board.ships.length);
+    ship.y = C.SHIP_Y;
+  }
+
+  /** Called once the death animation has finished playing out. */
+  function finishDeath(board, ship) {
+    ship.dead = false;
+    ship.deathT = 0;
+
+    if (ship.lives > 0) {
+      if (Game.session && Game.session.mode === 'classic') {
+        // Faithful alternating turns: this player steps aside for the other.
+        ship.alive = false;
+        ship.pendingRespawn = true;
+        endClassicTurn(board);
+      } else {
+        respawnShip(board, ship);
+      }
+      return;
+    }
+
+    ship.out = true;
+    ship.alive = false;
+    if (Game.session && Game.session.mode === 'classic') {
+      endBoard(board);
+    } else if (allShipsOut(board)) {
+      endBoard(board);
+    }
+  }
+
+  /** This board is finished — hold a beat, then swap turns or end the game. */
+  function endBoard(board) {
+    if (board.over) return;
+    board.over = true;
+    board.endT = BOARD_END_WAIT;
+    board.clearT = 0;
+    killUfo(board);
+    clearShots(board);      // also silences any beam still humming
+    clearPickups(board);
+    // The pickup banner is only ticked by updateBooms, which stops running the
+    // moment the state leaves 'play'. A token caught in the last beat before a
+    // game over would otherwise leave its banner painted over the score card
+    // for as long as that screen is up, so the board takes it down with it.
+    board.pickup = null;
+    marchStop();
+  }
+
+  function boardFinished(board) {
+    if (Game.session && Game.session.mode === 'classic') {
+      nextClassicTurn();
+    } else {
+      gameOver();
+    }
+  }
+
+  /** Index of the next classic board whose player can still play, or -1. */
+  function nextPlayableIndex(from) {
+    const s = Game.session;
+    if (!s) return -1;
+    const n = s.boards.length;
+    for (let i = 1; i <= n; i++) {
+      const idx = (from + i) % n;
+      const b = s.boards[idx];
+      if (b.over) continue;
+      const ship = b.ships[0];
+      if (ship && !ship.out && ship.lives > 0) return idx;
+    }
+    return -1;
+  }
+
+  /** Classic: the current player died but still has lives — pass the turn on. */
+  function endClassicTurn(board) {
+    const s = Game.session;
+    const idx = nextPlayableIndex(s.turn);
+    killUfo(board);
+    if (idx < 0 || idx === s.turn) {
+      // Nobody else to hand over to: this player simply comes back.
+      respawnShip(board, board.ships[0]);
+      return;
+    }
+    switchToBoard(idx);
+  }
+
+  /** Classic: the current board is over for good — hand over or end the game. */
+  function nextClassicTurn() {
+    const s = Game.session;
+    const idx = nextPlayableIndex(s.turn);
+    if (idx < 0) { gameOver(); return; }
+    switchToBoard(idx);
+  }
+
+  function switchToBoard(idx) {
+    const s = Game.session;
+    s.turn = idx;
+    const board = s.boards[idx];
+    Game.board = board;
+
+    const ship = board.ships[0];
+    if (ship && ship.pendingRespawn) respawnShip(board, ship);
+
+    enterBanner('PLAYER ' + ((ship ? ship.slot : 0) + 1),
+                'WAVE ' + board.wave, PLAYER_BANNER_TIME, false);
+  }
+
+  /* -------------------------------------------------------------------------
+   * WAVE FLOW
+   * ---------------------------------------------------------------------- */
+  function checkWaveClear(board) {
+    if (board.aliveCount > 0 || board.clearT > 0 || board.over) return;
+    board.clearT = WAVE_CLEAR_WAIT;
+    board.bombs.length = 0;
+    killUfo(board);
+    clearShots(board);
+    clearPickups(board);
+  }
+
+  function startNextWave(board) {
+    board.wave += 1;
+    board.bombs.length = 0;
+    board.bombT = C.BOMB_COOLDOWN;
+    board.bombType = 0;
+    board.ufoT = U.randRange(C.UFO_MIN_GAP, C.UFO_MAX_GAP);
+    board.clearT = 0;
+    killUfo(board);
+    // SPEC-WEAPONS §5: an upgrade is KEPT across a wave change — it feels much
+    // better than being stripped for winning — but the field is swept clean.
+    clearShots(board);
+    clearPickups(board);
+    board.pickup = null;
+    buildFormation(board);
+    restoreBunkers(board);
+
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (ship.out) continue;
+      ship.fireHeld = false;
+      if (!ship.dead) {
+        ship.alive = true;
+        ship.spawnInvuln = SPAWN_INVULN;
+        ship.x = spawnX(ship.slot, board.ships.length);
+        ship.y = C.SHIP_Y;
+      }
+    }
+
+    enterBanner('WAVE ' + board.wave, '', WAVE_BANNER_TIME, true);
+  }
+
+  function updateBooms(board, dt) {
+    const list = board.booms;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (!b.active) continue;
+      b.t += dt;
+      if (b.t >= BOOM_TIME) b.active = false;
+    }
+    const pops = board.popups;
+    for (let i = 0; i < pops.length; i++) {
+      const p = pops[i];
+      if (!p.active) continue;
+      p.t += dt;
+      p.y -= 22 * dt;
+      if (p.t >= POPUP_TIME) p.active = false;
+    }
+
+    // The weapon pickup banner is on the same clock: it must keep running while
+    // the board is ending or the wave beat is playing out, and this is the one
+    // FX pass every branch of updatePlay calls.
+    const pick = board.pickup;
+    if (pick) {
+      pick.t += dt;
+      pick.remaining = Math.max(0, pick.duration - pick.t);
+      if (pick.t >= pick.duration) board.pickup = null;
+    }
+  }
+
+  /* =========================================================================
+   * STATE MACHINE
+   * ====================================================================== */
+  let lastTempo = -1;
+
+  function toTitle() {
+    Game.state = 'title';
+    clearAllTrails();        // no board survives this, so nothing keeps burning
+    Game.session = null;
+    Game.board = null;
+    Game.banner = null;
+    Game.quitConfirm = false;
+    marchStop();
+    sirenStop();
+    // Hand every projectile in the pool back: no board owns them now, and any
+    // beam still holding the microwave hum lets go on the way out.
+    T.Weapons.releaseAllShots();
+    lastTempo = -1;
+    if (hiDirty) persistHi();
+  }
+
+  /* -------------------------------------------------------------------------
+   * SELECT-SCREEN PICKS  (SPEC-CHARACTERS §4, SPEC-VARIANTS §5)
+   *
+   * A pick is a character AND a variant of it, and the two always travel
+   * together: through the carousel, into the session, onto the ship, and out
+   * to localStorage so a player comes back to the version they last played.
+   * ---------------------------------------------------------------------- */
+
+  /* One key per player, per SPEC-VARIANTS §5. Storage is best-effort — file://
+   * and private mode throw, and T.Util wraps both directions — so a failed
+   * read or write only ever costs the player their remembered pick. */
+  const PICK_KEYS = ['toasterInvaders.p1', 'toasterInvaders.p2'];
+
+  /* The two controls this screen advertises, named here because this file is
+   * the one that binds them (see updateSelect). ui.js prints them verbatim. */
+  const SELECT_VARIANT_HINT = 'START';
+  const SELECT_MODE_HINT    = 'UP/DOWN';
+
+  /**
+   * Point a select-screen player at a character + variant, keeping every
+   * derived field in step: `kind` and `variant` are the source of truth,
+   * `index` is the carousel position and `variantId` is the `<kind>.<n>` id.
+   * Both are normalised here, so nothing downstream can be handed a character
+   * that is not on the roster or a variant that character does not have.
+   */
+  function setPick(p, kind, variant) {
+    p.kind = normalizeKind(kind);
+    p.index = charIndex(p.kind);
+    p.variant = normalizeVariant(p.kind, variant);
+    p.variantId = variantIdOf(p.kind, p.variant);
+  }
+
+  /**
+   * SPEC-VARIANTS §5: when both players land on the same character, DIFFERENT
+   * variants are the primary way they tell each other apart on the board — so
+   * P2 defaults one variant along rather than becoming P1's twin.
+   *
+   * Applied when P2 ARRIVES somewhere (joining, or browsing onto P1's
+   * character), never when P2 works the variant picker: a player who
+   * deliberately chooses the same skin as P1 is allowed to have it.
+   */
+  function separateFromP1(sel, p) {
+    if (!sel || !p || p.slot !== 1) return;
+    const p1 = sel.players[0];
+    if (!p1 || !p1.joined) return;
+    if (p1.kind !== p.kind || p1.variant !== p.variant) return;
+    setPick(p, p.kind, cycleVariant(p.kind, p.variant, 1));
+  }
+
+  /**
+   * A remembered pick for this seat, falling back to its default character.
+   *
+   * This is the ONE place a character id arrives from outside the game, so it
+   * is the one place that has to distrust it: isKind() rather than a bare
+   * roster lookup, because a stored kind of "toString" or "constructor" would
+   * otherwise pass every guard in this file (see IS_KIND).
+   */
+  function loadPick(slot, fallbackKind) {
+    const raw = U.storeGet(PICK_KEYS[slot], null);
+    let kind = fallbackKind;
+    let variant = 0;
+    if (raw && typeof raw === 'object') {
+      if (isKind(raw.kind)) kind = raw.kind;
+      if (typeof raw.variant === 'number') variant = raw.variant;
+    } else if (isKind(raw)) {
+      kind = raw;                       // a save written before variants existed
+    }
+    kind = normalizeKind(kind);
+    return { kind: kind, variant: normalizeVariant(kind, variant) };
+  }
+
+  /** Remember what each joined player took into this session. */
+  function savePicks(sel) {
+    if (!sel) return;
+    for (let i = 0; i < sel.players.length && i < PICK_KEYS.length; i++) {
+      const p = sel.players[i];
+      if (!p.joined) continue;
+      U.storeSet(PICK_KEYS[p.slot], { kind: p.kind, variant: p.variant });
+    }
+  }
+
+  function enterSelect() {
+    Game.state = 'select';
+    Game.banner = null;
+    // SPEC-CHARACTERS §4: the two panels are now windows onto a NINE-character
+    // carousel. `kind` stays the source of truth (it is what ui.js and the
+    // session read); `index` is its position in T.C.CHARACTER_ORDER, carried
+    // alongside so the carousel can render without searching for it.
+    //
+    // SPEC-VARIANTS §5: and each player now also carries the VARIANT of that
+    // character — `variant`, the index 0..2, with `variantId` beside it. Both
+    // seats open on whatever that player last took into a game.
+    const p1 = loadPick(0, KIND_DEFAULT);
+    const p2 = loadPick(1, KIND_P2);
+    const players = [
+      { slot: 0, joined: true,  kind: p1.kind, index: 0, variant: 0, variantId: '', ready: false },
+      { slot: 1, joined: false, kind: p2.kind, index: 0, variant: 0, variantId: '', ready: false }
+    ];
+    Game.select = {
+      mode: 'coop',                   // §9: co-op is the default
+      t: 0,
+      order: ROSTER_ORDER,            // the carousel, in roster order
+      players: players,
+      // This file owns the select-screen bindings, so it NAMES them: ui.js
+      // prints these strings verbatim wherever the screen tells a player which
+      // control moves what. Change the binding below and the labels follow;
+      // the binding is never written down twice.
+      variantHint: SELECT_VARIANT_HINT,
+      modeHint: SELECT_MODE_HINT
+    };
+    setPick(players[0], p1.kind, p1.variant);
+    setPick(players[1], p2.kind, p2.variant);
+    // Two remembered picks can be the same version; P2 steps aside.
+    separateFromP1(Game.select, players[1]);
+  }
+
+  function startSession() {
+    const sel = Game.select;
+    const slots = [];
+    const kinds = {};
+    const variants = {};
+    for (let i = 0; i < sel.players.length; i++) {
+      const p = sel.players[i];
+      if (!p.joined) continue;
+      slots.push(p.slot);
+      // The carousel hands over a character id AND a variant index; both are
+      // carried straight into ship creation. The character is what picks the
+      // base weapon (SPEC-CHARACTERS §6); the variant is what picks the skin
+      // that weapon wears (SPEC-VARIANTS §1) and nothing else.
+      kinds[p.slot] = normalizeKind(p.kind);
+      variants[p.slot] = normalizeVariant(kinds[p.slot], p.variant);
+    }
+    if (slots.length === 0) {
+      slots.push(0);
+      kinds[0] = KIND_DEFAULT;
+      variants[0] = 0;
+    }
+
+    // SPEC-VARIANTS §5: remember each player's character + variant for next time.
+    savePicks(sel);
+
+    // One player is simply co-op with a single ship.
+    const mode = (sel.mode === 'classic' && slots.length > 1) ? 'classic' : 'coop';
+
+    const session = {
+      mode: mode,
+      slots: slots,
+      kinds: kinds,
+      variants: variants,
+      boards: [],
+      turn: 0,
+      over: false,
+      startedAt: Game.time
+    };
+
+    if (mode === 'classic') {
+      for (let i = 0; i < slots.length; i++) {
+        session.boards.push(createBoard([slots[i]], 1, kinds, variants));
+      }
+    } else {
+      session.boards.push(createBoard(slots, 1, kinds, variants));
+    }
+
+    Game.session = session;
+    Game.board = session.boards[0];
+    Game.quitConfirm = false;
+
+    const sub = mode === 'classic' ? 'PLAYER ' + (slots[0] + 1) : '';
+    enterBanner('WAVE 1', sub, WAVE_BANNER_TIME, true);
+  }
+
+  /**
+   * Show a full-screen banner ('wave' state) for `duration` seconds, then drop
+   * back into play. Used for both "WAVE n" and the classic "PLAYER n" swap.
+   */
+  function enterBanner(text, sub, duration, waveSound) {
+    Game.state = 'wave';
+    Game.banner = {
+      text: text,
+      title: text,       // alias, so UI can read either name
+      sub: sub || '',
+      t: 0,
+      duration: duration,
+      remaining: duration
+    };
+    marchStop();
+    sirenStop();
+    // The board freezes behind the banner, so nothing may be left holding a
+    // lance up or a beam humming across it — and a half-played pickup banner
+    // must not thaw out on top of a later wave (or a later classic turn), since
+    // nothing ticks it down while the board is frozen.
+    if (Game.board) {
+      dropAttached(Game.board);
+      Game.board.pickup = null;
+    }
+    lastTempo = -1;
+    if (waveSound) sfx('waveStart');
+  }
+
+  function enterPlay() {
+    Game.state = 'play';
+    Game.banner = null;
+    Game.quitConfirm = false;
+    const board = Game.board;
+    if (board) {
+      board.stepInterval = U.stepInterval(board.aliveCount, board.wave);
+      lastTempo = board.stepInterval;
+      marchTempo(board.stepInterval);
+      marchStart();
+      if (board.ufo) sirenStart();
+    }
+  }
+
+  function enterPause() {
+    if (Game.state !== 'play') return;
+    Game.state = 'pause';
+    Game.quitConfirm = false;
+    marchStop();
+    sirenStop();
+    // A held lance or beam would otherwise hang in the air humming over a
+    // frozen board; everything else is left exactly where the player left it.
+    if (Game.board) dropAttached(Game.board);
+    sfx('uiConfirm');
+  }
+
+  function gameOver() {
+    if (Game.session) Game.session.over = true;
+    Game.state = 'over';
+    Game.banner = null;
+    marchStop();
+    sirenStop();
+    T.Weapons.releaseAllShots();     // nothing keeps humming over the score card
+    // ...and no bacon embers keep smouldering behind it either: in classic
+    // mode the boards the loser is not standing on still hold their own trail.
+    clearAllTrails();
+    lastTempo = -1;
+    sfx('gameOver');
+    persistHi();
+  }
+
+  /* ---------------------------- per-state update ------------------------ */
+
+  function updateTitle() {
+    if (anyPressed('start')) {
+      consumeAll('start');
+      sfx('uiConfirm');
+      enterSelect();
+    }
+  }
+
+  function updateSelect(dt) {
+    const sel = Game.select;
+    if (!sel) { enterSelect(); return; }
+    sel.t += dt;
+
+    for (let i = 0; i < sel.players.length; i++) {
+      const p = sel.players[i];
+      const pd = pad(p.slot);
+      if (!pd) continue;
+
+      if (!p.joined) {
+        if (pd.startPressed || pd.firePressed) {
+          p.joined = true;
+          p.ready = false;
+          // SPEC-VARIANTS §5: a player joining onto the other one's exact
+          // version steps one skin along, so they can tell each other apart.
+          separateFromP1(sel, p);
+          sfx('uiConfirm');
+          if (T.Input && T.Input.consume) {
+            T.Input.consume(p.slot, 'start');
+            T.Input.consume(p.slot, 'fire');
+          }
+        }
+        continue;
+      }
+
+      if (p.ready) {
+        if (pd.backPressed) {
+          p.ready = false;
+          sfx('uiBack');
+          if (T.Input && T.Input.consume) T.Input.consume(p.slot, 'back');
+        }
+        continue;
+      }
+
+      // FIRE IS TESTED FIRST, and it ends this player's turn in the loop.
+      // §5 makes W a P1 fire key and ArrowUp a P2 fire key, and input.js also
+      // binds those same two codes to 'up' so menus are drivable from the
+      // keyboard. A keyboard player readying up therefore arrives here with
+      // firePressed AND upPressed set from ONE keypress — handling both would
+      // silently flip the game mode every time somebody locked in. Fire wins
+      // (the spec names it; the up/down mode binding is ours), and the up/down
+      // edges are consumed so nothing downstream acts on them either. KeyS /
+      // ArrowDown stay a collision-free way to change the mode on a keyboard.
+      if (pd.firePressed) {
+        p.ready = true;
+        sfx('uiConfirm');
+        if (T.Input && T.Input.consume) {
+          T.Input.consume(p.slot, 'fire');
+          T.Input.consume(p.slot, 'up');
+          T.Input.consume(p.slot, 'down');
+        }
+        continue;
+      }
+
+      // SPEC-CHARACTERS §4: left/right BROWSE the nine-character carousel and
+      // Y cycles forward through it. Each player browses independently, and
+      // two players may happily land on the same character — which is exactly
+      // when the variant below starts to matter.
+      let step = 0;
+      if (pd.leftPressed) step -= 1;
+      if (pd.rightPressed) step += 1;
+      if (pd.altCharPressed) step += 1;
+      if (step !== 0) {
+        setPick(p, cycleKind(p.kind, step), p.variant);
+        // Arriving on P1's character: take the next skin along, so the two
+        // ships are never the same colour by accident (SPEC-VARIANTS §5).
+        separateFromP1(sel, p);
+        sfx('uiMove');
+      }
+
+      /* SPEC-VARIANTS §5: the variant picker — START steps through this
+       * character's three skins, live, with the preview, the name and the
+       * flavour line changing under the player's thumb.
+       *
+       * §5 asks for up/down or LB/RB. Every one of those is spoken for:
+       *   - LB/RB are not in the input contract at all. SPEC.md §5 gives
+       *     input.js no shoulder bindings and no keyboard codes for them, so
+       *     a picker on LB/RB would not exist for a keyboard player.
+       *   - UP/DOWN is the shipped GAME MODE selector, and the ONLY way to
+       *     reach CLASSIC on either a pad or a keyboard.
+       *   - Y is SPEC-CHARACTERS §4's second way to step the nine-character
+       *     carousel, and A and B are READY and BACK.
+       * Taking any of them would cost a control the game already ships and the
+       * regression suite already drives. START is the one edge a joined player
+       * has spare — it does nothing at all on this screen once you are in —
+       * and it exists on both pads and both keyboards, so all four ways of
+       * playing can reach the picker. ui.js labels it.
+       *
+       * This is the player's OWN choice, so it is never second-guessed by the
+       * P2 tie-breaker: if you want to be the same jam as P1, be the same jam. */
+      if (pd.startPressed) {
+        setPick(p, p.kind, cycleVariant(p.kind, p.variant, 1));
+        sfx('uiMove');
+        if (T.Input && T.Input.consume) T.Input.consume(p.slot, 'start');
+      }
+
+      // Up / down flips the game mode for everyone.
+      if (pd.upPressed || pd.downPressed) {
+        sel.mode = sel.mode === 'coop' ? 'classic' : 'coop';
+        sfx('uiMove');
+      }
+      if (pd.backPressed) {
+        if (p.slot === 1) {
+          p.joined = false;               // P2 drops out
+          sfx('uiBack');
+        } else {
+          sfx('uiBack');
+          consumeAll('back');
+          toTitle();
+          return;
+        }
+        if (T.Input && T.Input.consume) T.Input.consume(p.slot, 'back');
+      }
+    }
+
+    // Everyone who joined has readied up → play.
+    let joined = 0;
+    let ready = 0;
+    for (let i = 0; i < sel.players.length; i++) {
+      if (sel.players[i].joined) { joined++; if (sel.players[i].ready) ready++; }
+    }
+    if (joined > 0 && joined === ready) {
+      consumeAll('fire');
+      consumeAll('start');
+      startSession();
+    }
+  }
+
+  function updateWave(dt) {
+    const b = Game.banner;
+    if (!b) { enterPlay(); return; }
+    b.t += dt;
+    b.remaining = Math.max(0, b.duration - b.t);
+    if (b.t >= b.duration) enterPlay();
+  }
+
+  function updatePause() {
+    if (Game.quitConfirm) {
+      if (anyPressed('fire') || anyPressed('start')) {
+        consumeAll('fire');
+        consumeAll('start');
+        sfx('uiConfirm');
+        toTitle();
+      } else if (anyPressed('back')) {
+        consumeAll('back');
+        Game.quitConfirm = false;
+        sfx('uiBack');
+      }
+      return;
+    }
+    if (anyPressed('start')) {
+      consumeAll('start');
+      enterPlay();
+    } else if (anyPressed('back')) {
+      consumeAll('back');
+      Game.quitConfirm = true;
+      sfx('uiBack');
+    }
+  }
+
+  function updateOver() {
+    if (anyPressed('start') || anyPressed('fire')) {
+      consumeAll('start');
+      consumeAll('fire');
+      sfx('uiConfirm');
+      toTitle();
+    }
+  }
+
+  function updatePlay(dt) {
+    const board = Game.board;
+    if (!board) { toTitle(); return; }
+
+    if (anyPressed('start')) {
+      consumeAll('start');
+      enterPause();
+      return;
+    }
+
+    // The board has ended: let the debris settle before moving on.
+    if (board.over) {
+      board.endT -= dt;
+      updateBooms(board, dt);
+      if (board.particles && board.particles.update) board.particles.update(dt);
+      if (board.endT <= 0) boardFinished(board);
+      return;
+    }
+
+    // Wave cleared: a short beat, then the next formation.
+    if (board.clearT > 0) {
+      board.clearT -= dt;
+      updateShips(board, dt);
+      updateShots(board, dt);
+      updateBooms(board, dt);
+      if (board.particles && board.particles.update) board.particles.update(dt);
+      if (Game.state !== 'play') return;
+      // The last ship can finish dying DURING the clear beat (its 1.6s death
+      // animation outlives the 0.9s pause). The board is finished at that
+      // point, so never spin up a fresh wave on top of it.
+      if (board.over) return;
+      if (board.clearT <= 0) startNextWave(board);
+      return;
+    }
+
+    updateShips(board, dt);                 // 1 + 2
+    if (Game.state !== 'play') return;      // a classic turn swap may have fired
+    if (board.over) return;                 // last ship just died: freeze the board
+    updateShots(board, dt);                 // 3
+    updateBombs(board, dt);
+    updateFormation(board, dt);             // 4
+    updateUfo(board, dt);                   // 5
+    updateCrate(board, dt);                 // 5b
+    updateToken(board, dt);                 // 5c
+    updateBombSpawn(board, dt);             // 6
+    resolveCollisions(board);               // 7
+    checkWaveClear(board);                  // 8
+    updateBooms(board, dt);
+    if (board.particles && board.particles.update) board.particles.update(dt);  // 9
+  }
+
+  /* =========================================================================
+   * RENDER
+   * ====================================================================== */
+  function renderBunkers(ctx, board) {
+    for (let i = 0; i < board.bunkers.length; i++) {
+      const b = board.bunkers[i];
+      if (T.Entities.bunkerIsGone(b)) continue;
+      if (b.canvas) ctx.drawImage(b.canvas, Math.round(b.x), Math.round(b.y));
+      else blit(ctx, 'bunker', b.x, b.y);
+    }
+  }
+
+  function renderEnemies(ctx, board) {
+    const wing = C.FRAME_CYCLE[board.frameIdx % C.FRAME_CYCLE.length];
+    // SPEC-WEAPONS §5: a syruped formation must LOOK syruped, or the slowdown
+    // reads as a bug. Washed in the syrup trap's own colour.
+    const syruped = board.slowT > 0;
+    const wash = syruped ? syrupColor() : null;
+    const list = board.enemies;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!e.alive) continue;
+      const name = enemySprite(e, wing);
+      if (syruped) blitTinted(ctx, name, e.x, e.y, wash);
+      else blit(ctx, name, e.x, e.y);
+    }
+  }
+
+  function renderUfo(ctx, board) {
+    const u = board.ufo;
+    if (!u) return;
+    const alt = (Math.floor(Game.time * UFO_ANIM_HZ) & 1) === 1;
+    blit(ctx, alt ? 'ufo1' : 'ufo', u.x, u.y);
+  }
+
+  /**
+   * Every projectile, drawn by its own mechanic — the butter trail and the jam
+   * streak included, since weapons.js owns the look of what it fires.
+   */
+  function renderShots(ctx, board) {
+    const list = board.shots;
+    if (!list) return;
+    for (let i = 0; i < list.length; i++) T.Weapons.renderShot(ctx, list[i]);
+  }
+
+  function renderCrate(ctx, board) {
+    if (board.crate) T.Weapons.renderCrate(ctx, board.crate);
+  }
+
+  function renderToken(ctx, board) {
+    const token = board.token;
+    if (!token || !token.alive) return;
+    T.Weapons.renderToken(ctx, token);
+    uiCall('renderTokenLabel', ctx, token);
+  }
+
+  function renderBombs(ctx, board) {
+    for (let i = 0; i < board.bombs.length; i++) {
+      const b = board.bombs[i];
+      if (!b.alive) continue;
+      blit(ctx, bombSprite(b), b.x, b.y);
+    }
+  }
+
+  /* Ship art comes from the roster, resolved and interned per kind AND VARIANT
+   * by shipFrames / deathFrames, so twenty-seven versions cost the render loop
+   * two table lookups and no strings (§12: no per-frame allocation in hot
+   * loops). The variant rides on the ship, so a ship blinking through its
+   * respawn shield, burning through its death animation, or standing there
+   * holding a MICROWAVE RAY is always drawn in the skin its player picked. */
+  function renderShips(ctx, board) {
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (ship.out && !ship.dead) continue;
+
+      if (ship.dead) {
+        // Charred toast, alternating between the two burn frames. Every
+        // character burns the same way unless its roster row says otherwise.
+        const burn = deathFrames(ship.kind, ship.variant);
+        const f = (Math.floor(ship.deathT * 10) & 1) ? 1 : 0;
+        blit(ctx, burn[f], ship.x, ship.y);
+        continue;
+      }
+      if (!ship.alive) continue;
+      // Blink while the respawn shield is up.
+      if (ship.spawnInvuln > 0 && (Math.floor(Game.time * 12) & 1) === 0) continue;
+      const frames = shipFrames(ship.kind, ship.variant);
+      blit(ctx, frames[ship.frame === 1 ? 1 : 0], ship.x, ship.y);
+    }
+  }
+
+  function renderBooms(ctx, board) {
+    const list = board.booms;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (!b.active) continue;
+      ctx.globalAlpha = 1 - (b.t / BOOM_TIME) * 0.5;
+      blit(ctx, 'boomEnemy', b.x - 24, b.y - 16);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /* Reused every frame so the render path allocates nothing. */
+  const popupTextOpts = { size: 16, color: PAL.ui, align: 'center' };
+
+  function renderPopups(ctx, board) {
+    const list = board.popups;
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      if (!p.active) continue;
+      ctx.globalAlpha = U.clamp(1 - p.t / POPUP_TIME, 0, 1);
+      popupTextOpts.color = p.color;
+      uiCall('drawText', ctx, p.text, p.x, p.y, popupTextOpts);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /** The floor line the toasters are marching toward. */
+  function renderFloor(ctx) {
+    ctx.fillStyle = PAL.uiDim;
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(C.FORM_MARGIN, C.PLAY_BOTTOM, C.W - C.FORM_MARGIN * 2, 2);
+    ctx.globalAlpha = 1;
+  }
+
+  function renderBoard(ctx, board) {
+    renderFloor(ctx);
+    renderBunkers(ctx, board);
+    renderEnemies(ctx, board);
+    renderUfo(ctx, board);
+    renderCrate(ctx, board);
+    renderBombs(ctx, board);
+    renderShots(ctx, board);
+    renderToken(ctx, board);
+    renderShips(ctx, board);
+    renderBooms(ctx, board);
+    if (board.particles && board.particles.render) board.particles.render(ctx);
+    renderPopups(ctx, board);
+  }
+
+  /**
+   * The weapon HUD: a chip per player under their score, plus the centre pickup
+   * banner. T.UI owns their look; this file only says which corner is whose.
+   */
+  function renderWeaponHud(ctx, board) {
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (ship.out) continue;
+      if (ship.slot === 1) uiCall('renderWeaponChip', ctx, ship, C.W - CHIP_EDGE, CHIP_Y, 'right');
+      else uiCall('renderWeaponChip', ctx, ship, CHIP_EDGE, CHIP_Y, 'left');
+    }
+    if (board.pickup) uiCall('renderPickupBanner', ctx, board);
+  }
+
+  /* =========================================================================
+   * PUBLIC OBJECT
+   * ====================================================================== */
+  const Game = {
+    state: 'title',
+    session: null,
+    board: null,
+    select: null,
+    banner: null,
+    quitConfirm: false,
+    hiScore: 0,
+    time: 0,
+    canvas: null,
+
+    init: function (canvas) {
+      this.canvas = canvas || null;
+      this.time = 0;
+      this.session = null;
+      this.board = null;
+      this.banner = null;
+      this.quitConfirm = false;
+
+      const stored = Number(U.storeGet(HI_KEY, 0));
+      this.hiScore = (isFinite(stored) && stored > 0) ? Math.floor(stored) : 0;
+      hiDirty = false;
+      hiSaveT = 0;
+      lastTempo = -1;
+
+      initBackground();
+      enterSelect();          // primes a default select payload for the UI
+      this.state = 'title';
+
+      const A = T.Audio;
+      if (A && typeof A.init === 'function') A.init();
+    },
+
+    update: function (dt) {
+      this.time += dt;
+      updateBackground(dt);
+
+      switch (this.state) {
+        case 'title':  updateTitle(dt);  break;
+        case 'select': updateSelect(dt); break;
+        case 'wave':   updateWave(dt);   break;
+        case 'play':   updatePlay(dt);   break;
+        case 'pause':  updatePause(dt);  break;
+        case 'over':   updateOver(dt);   break;
+        default:       this.state = 'title'; break;
+      }
+
+      // Persist the high score off the hot path, at most twice a second.
+      if (hiDirty) {
+        hiSaveT += dt;
+        if (hiSaveT >= 2) { hiSaveT = 0; persistHi(); }
+      }
+    },
+
+    render: function (ctx) {
+      // The After Dark sky sits under EVERY screen.
+      drawBackground(ctx);
+
+      const board = this.board;
+      switch (this.state) {
+        case 'title':
+          uiCall('renderTitle', ctx, this);
+          uiCall('renderControllerHint', ctx, this);
+          break;
+        case 'select':
+          uiCall('renderSelect', ctx, this);
+          uiCall('renderControllerHint', ctx, this);
+          break;
+        case 'wave':
+          if (board) { renderBoard(ctx, board); uiCall('renderHUD', ctx, board, this); renderWeaponHud(ctx, board); }
+          uiCall('renderWaveBanner', ctx, this);
+          break;
+        case 'play':
+          if (board) { renderBoard(ctx, board); uiCall('renderHUD', ctx, board, this); renderWeaponHud(ctx, board); }
+          break;
+        case 'pause':
+          if (board) { renderBoard(ctx, board); uiCall('renderHUD', ctx, board, this); renderWeaponHud(ctx, board); }
+          uiCall('renderPause', ctx, this);
+          break;
+        case 'over':
+          if (board) { renderBoard(ctx, board); uiCall('renderHUD', ctx, board, this); renderWeaponHud(ctx, board); }
+          uiCall('renderOver', ctx, this);
+          break;
+        default:
+          break;
+      }
+
+      uiCall('renderScanlines', ctx);
+    },
+
+    /* Convenience hooks for main.js (visibilitychange auto-pause, etc). */
+    pause: function () { enterPause(); },
+
+    resume: function () { if (this.state === 'pause' && !this.quitConfirm) enterPlay(); },
+
+    togglePause: function () {
+      if (this.state === 'play') enterPause();
+      else if (this.state === 'pause') enterPlay();
+    }
+  };
+
+  T.Game = Game;
+
+})(window.T = window.T || {});
