@@ -4,6 +4,12 @@
  * ROLE: everything the player READS. Title, character select, HUD, wave
  * banner, pause, game over, the CRT overlay and the controller hint.
  *
+ * SECRETS: this file is also what keeps one. The tenth character is ordinary
+ * data everywhere else in the game and ABSENT here until T.Util.isUnlocked
+ * says otherwise — off the carousel, off the roster strip, out of the count —
+ * and then, for about two and a half seconds, the loudest thing on the screen
+ * (SPEC-BURRITO.md §2 and §5).
+ *
  * This file owns no game state. It reads live values off the board / game
  * objects it is handed and draws them. The only things it keeps between
  * frames are (a) cached offscreen canvases (the CRT overlay, glyph metrics)
@@ -504,9 +510,11 @@
    * ====================================================================== */
 
   /* -------------------------------------------------------------------------
-   * THE ROSTER  (SPEC-CHARACTERS.md §2 and §4)
+   * THE ROSTER  (SPEC-CHARACTERS.md §2 and §4, SPEC-BURRITO.md §5)
    *
-   * Nine playable characters. Every word and every number this file prints
+   * Nine playable characters — ten once the secret is earned; see THE SECRET
+   * ROSTER below, which is what decides how many of these a player may SEE.
+   * Every word and every number this file prints
    * about a character — its name, its weapon, the ADVANTAGE / DRAWBACK lines
    * and the three meters — is read out of T.C.BASE_WEAPONS. ui.js states no
    * balance figure of its own, so retuning the roster in util.js retunes this
@@ -581,9 +589,18 @@
     return {
       key: row.id,
       index: index,
+      // Position in the roster the PLAYER can see, which is not the same list
+      // while a secret is still locked (see THE SECRET ROSTER below).
+      // Rewritten by visibleRoster(); -1 means "not on the visible list".
+      visIndex: index,
       name: row.char,
       blurb: row.blurb,
       weapon: row.weapon,
+      // Which mechanic the base weapon dispatches to. The one this file cares
+      // about is 'cycle' — the rotating gun, the only weapon in the game that
+      // changes while you play, and the only one whose panel and HUD chip have
+      // to print more than a name (SPEC-BURRITO.md §5).
+      mech: row.mech || 'plain',
       color: row.color || PAL.ui,
       sprite: row.ship,
       spriteFire: row.shipFire,
@@ -601,7 +618,12 @@
     };
   }
 
-  /** The nine, in T.C.CHARACTER_ORDER — which is the carousel's order. */
+  /**
+   * The WHOLE table, in T.C.CHARACTER_ORDER — the nine, and the secret tenth
+   * at the end of it. What the carousel actually walks is visibleRoster();
+   * this array exists so that CHARS, the HUD and the game-over card can look
+   * any character up by id, unlocked or not.
+   */
   const ROSTER = (function buildRoster() {
     const rows = C.BASE_WEAPONS || {};
     const order = C.CHARACTER_ORDER || Object.keys(rows);
@@ -624,10 +646,146 @@
    * fresh object, because charInfo runs in the per-frame HUD path.
    */
   const NO_CHAR = {
-    key: '', index: -1, name: '', blurb: '', weapon: '',
-    color: PAL.uiDim, sprite: null, spriteFire: null, life: null,
+    key: '', index: -1, visIndex: -1, name: '', blurb: '', weapon: '',
+    mech: 'plain', color: PAL.uiDim, sprite: null, spriteFire: null, life: null,
     advantage: '', drawback: '', variants: [], bars: []
   };
+
+  /* -------------------------------------------------------------------------
+   * THE SECRET ROSTER  (SPEC-BURRITO.md §2 and §5)
+   *
+   * BURRITO is the tenth row of T.C.BASE_WEAPONS and the tenth id in
+   * T.C.CHARACTER_ORDER — he is ordinary DATA, unconditionally, because being
+   * a secret is a question of what this screen offers, not of the table having
+   * a hole in it. Hiding him is THIS file's job, and the rule is absolute:
+   *
+   *   UNTIL HE IS UNLOCKED HE DOES NOT EXIST. Not a greyed-out slot, not a
+   *   '???' pip, not a tenth box with a question mark in it — ABSENT. He is
+   *   missing from the carousel, missing from the roster strip, missing from
+   *   the ghosted neighbours either side of the preview, and missing from the
+   *   COUNT: a locked player reads "3 OF 9", an unlocked one reads "3 OF 10".
+   *
+   * A '???' slot is not a secret, it is an advertisement for one, and it
+   * would answer the question the whole feature exists to make a player ask.
+   *
+   * WHICH IDS ARE SECRET is read from T.C.SECRET_CHARACTERS when util.js
+   * states one, so a second secret never means editing this file; the literal
+   * below is the fallback for the build that ships today, where the unlock set
+   * is one id long and lives in SPEC-BURRITO.md rather than in T.C.
+   * ---------------------------------------------------------------------- */
+
+  const SECRET_IDS = (function secretIds() {
+    const stated = C.SECRET_CHARACTERS;
+    if (Array.isArray(stated) && stated.length > 0) {
+      const out = [];
+      for (let i = 0; i < stated.length; i++) {
+        if (typeof stated[i] === 'string' && stated[i]) out.push(stated[i]);
+      }
+      if (out.length > 0) return out;
+    }
+    return ['burrito'];
+  })();
+
+  const SECRET_SET = Object.create(null);
+  for (let i = 0; i < SECRET_IDS.length; i++) SECRET_SET[SECRET_IDS[i]] = true;
+
+  /** Is this character id one the player has to earn? */
+  function isSecretId(key) {
+    return SECRET_SET[key] === true;
+  }
+
+  /**
+   * May the player SEE this character?
+   *
+   * Everything that is not a secret, always. A secret only once
+   * T.Util.isUnlocked says so — and on a build with no unlock layer at all,
+   * NOT: a missing storage helper is not permission to spoil the surprise,
+   * and the failure this defaults to (a secret stays secret) is the harmless
+   * one. Never throws; ui.js may not be the reason a frame dies.
+   */
+  function secretShown(key) {
+    if (!isSecretId(key)) return true;
+    if (!U || typeof U.isUnlocked !== 'function') return false;
+    try {
+      return U.isUnlocked(key) === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /**
+   * A bitmask of which secrets are currently visible — the cheap "has anything
+   * changed?" question, asked once per frame by visibleRoster(). It allocates
+   * nothing (§12): isUnlocked is an object lookup after its first call, and
+   * the answer is an integer, not a rebuilt list.
+   */
+  function secretMask() {
+    let m = 0;
+    for (let i = 0; i < SECRET_IDS.length && i < 30; i++) {
+      if (secretShown(SECRET_IDS[i])) m |= (1 << i);
+    }
+    return m;
+  }
+
+  let visRoster = ROSTER;
+  let visMask = -1;
+
+  /**
+   * The roster AS THE PLAYER SEES IT — the nine, or the ten once burrito is
+   * earned. This is what the carousel, the strip, the ghosts and every count
+   * on the select screen walk; ROSTER itself stays the full table, because
+   * CHARS, the HUD and the game-over card must still be able to look a
+   * character up by id whether or not the select screen would offer him.
+   *
+   * Rebuilt only when the unlock state actually changes — once a session, at
+   * the moment the reveal banner fires — so the per-frame path is one integer
+   * compare and the array is never reallocated underneath a render.
+   */
+  function visibleRoster() {
+    const m = secretMask();
+    if (m === visMask) return visRoster;
+    visMask = m;
+    const out = [];
+    for (let i = 0; i < ROSTER.length; i++) {
+      const e = ROSTER[i];
+      if (!secretShown(e.key)) {
+        e.visIndex = -1;
+        continue;
+      }
+      e.visIndex = out.length;
+      out.push(e);
+    }
+    visRoster = out;
+    return out;
+  }
+
+  /** Where a character sits in the visible roster, or -1 if it is hidden. */
+  function visibleIndexOf(entry) {
+    visibleRoster();                       // refreshes every entry's visIndex
+    const i = entry ? entry.visIndex : -1;
+    return (typeof i === 'number' && isFinite(i)) ? i : -1;
+  }
+
+  /**
+   * The ids the player may choose from right now, in carousel order — a fresh
+   * array, so game.js can walk it without being handed this file's own list.
+   *
+   * Exported because the carousel's STATE lives in game.js and its PICTURE
+   * lives here, and the two must agree about how many characters there are:
+   * a screen that draws nine pips while the input layer steps through ten
+   * would put a player on a character the panel cannot show.
+   */
+  function characterList() {
+    const vis = visibleRoster();
+    const out = [];
+    for (let i = 0; i < vis.length; i++) out.push(vis[i].key);
+    return out;
+  }
+
+  /** How many characters the player can see: nine locked, ten unlocked. */
+  function characterCount() {
+    return visibleRoster().length;
+  }
 
   /* -------------------------------------------------------------------------
    * VARIANTS  (SPEC-VARIANTS.md §5)
@@ -954,9 +1112,28 @@
       if (!kind && Array.isArray(kinds)) kind = kinds[i];
       // An unset slot starts on its own seat in the carousel — P1 on the first
       // of the nine, P2 on the second — rather than on a hardcoded character.
+      //
+      // WHERE THE SECRET IS KEPT, precisely, because this line looks like the
+      // gap and is not one. A kind the caller NAMES is drawn, secret or not —
+      // this panel is a window onto a character, and refusing to render the
+      // one it was handed would leave a harness (and the game-over card's own
+      // lookup path) unable to show a character that is perfectly legitimate
+      // to show. What this file guarantees is that nothing it ever OFFERS is a
+      // locked secret: the carousel, the strip, the ghosts, the "n OF n" and
+      // the empty-slot seat below all walk visibleRoster(), so the only way a
+      // secret reaches this line is a caller that already named him. In the
+      // shipped game there is no such caller — every select-screen pick is
+      // written by game.js's setPick, which runs normalizeVisibleKind, and the
+      // remembered pick is filtered through isPickable on the way out of
+      // storage — so a player who has not reached wave 5 has no route here
+      // (SPEC-BURRITO §2). Named anyway, he draws with visIndex -1: no pip
+      // lit, no position printed, and the count still reads the visible nine.
       const kindGiven = !!CHARS[kind];
       if (!kindGiven) {
-        const seat = ROSTER[Math.min(i, ROSTER.length - 1)];
+        // The seat comes off the VISIBLE roster, so an empty slot can never be
+        // filled with a character the player has not earned (SPEC-BURRITO §2).
+        const vis = visibleRoster();
+        const seat = vis[Math.min(i, vis.length - 1)];
         kind = seat ? seat.key : kind;
       }
 
@@ -1090,6 +1267,53 @@
     } catch (err) {
       return null;
     }
+  }
+
+  /* -------------------------------------------------------------------------
+   * THE ROTATING GUN  (SPEC-BURRITO.md §1 and §5)
+   *
+   * WRAPPED fires the NEXT of sizzle / flake / pepper on every trigger pull,
+   * so "what am I holding?" has a different answer every shot and the HUD has
+   * to answer it. weapons.js owns that position — it lives on the SHIP, so two
+   * players on burrito never share one — and T.Weapons.cycleState(ship) is the
+   * only way in. This file NEVER recomputes the cycle: it does not read
+   * T.C.BURRITO_CYCLE, it does not count shots, it does not keep an index of
+   * its own. A HUD that derived the order itself would drift from the gun the
+   * frame anything about the cycle was tuned, and the one thing this chip is
+   * for is being right about the next shot.
+   *
+   * The returned view is CACHED ON THE SHIP and rewritten in place, so asking
+   * every frame allocates nothing. Read it, do not keep it.
+   * ---------------------------------------------------------------------- */
+
+  /** T.Weapons.cycleState for a ship, or null for the other nine. */
+  function cycleOf(ship) {
+    const W = T.Weapons;
+    if (!ship || !W || typeof W.cycleState !== 'function') return null;
+    try {
+      return W.cycleState(ship);
+    } catch (err) {
+      return null;                          // never take a frame down over art
+    }
+  }
+
+  /* The select screen has no ship to ask — nobody has been built yet — so it
+   * asks about a character instead, through a stand-in carrying the only two
+   * fields cycleState reads: which character this is, and where the cycle
+   * stands. Position 0 is not a guess: the cycle RESETS at the start of a new
+   * game (SPEC-BURRITO §1), so index 0 genuinely is the weapon the first
+   * trigger pull after this screen will fire.
+   *
+   * Hoisted, and cycleState caches its view on the object it is handed, so the
+   * whole per-frame path here is two field writes and a lookup. */
+  const cycleProbe = { kind: '', wCycle: 0, weapon: null };
+
+  /** The cycle a CHARACTER ID would fly, or null if it is not the rotating gun. */
+  function cycleForKind(kind) {
+    if (!kind) return null;
+    cycleProbe.kind = kind;
+    cycleProbe.wCycle = 0;
+    return cycleOf(cycleProbe);
   }
 
   /**
@@ -1481,7 +1705,19 @@
   // screen, and §12 forbids allocating in a per-frame path.
   let attractRoster = null;
 
-  /** The droppable upgrades, in roster order, or null if weapons.js is absent. */
+  /**
+   * The droppable upgrades, in roster order, or null if weapons.js is absent.
+   *
+   * THE SECRET IS SAFE ON THIS SCREEN, and by two independent facts rather
+   * than by luck. WRAPPED is a BASE weapon, so it is not in T.Weapons.LIST at
+   * all (that list is the two base plus the fifteen droppable) and could not
+   * reach this wheel even if the filter below were deleted; and the filter
+   * below drops anything belonging to a secret character anyway. Neither test
+   * asks whether he is unlocked YET — this list is built once and kept, so a
+   * question whose answer can change mid-session must not be asked here.
+   * Nothing else on the title screen names a character: the attract row is
+   * toasters and the score table is toasters (SPEC-BURRITO.md §2).
+   */
   function upgradeRoster() {
     if (attractRoster) return attractRoster;
     const W = T.Weapons;
@@ -1490,6 +1726,7 @@
     for (let i = 0; i < W.LIST.length; i++) {
       const d = W.LIST[i];
       if (!d || d.base || d.internal || !d.name) continue;
+      if (isSecretId(d.char)) continue;
       out.push(d);
     }
     if (out.length === 0) return null;
@@ -1654,15 +1891,18 @@
    *
    * A NINE-character carousel, one per player (SPEC-CHARACTERS.md §4), each
    * character three variants deep for 27 playable versions (SPEC-VARIANTS.md
-   * §5). The two panels browse INDEPENDENTLY and may land on the same
-   * character, so P2's art carries the p2 accent wash and P2 defaults to a
-   * different variant. For whichever version is in front of you the panel
+   * §5) — TEN and 30 for a player who has reached wave 5 and earned the
+   * secret, whose panel additionally prints the cycle his rotating gun turns
+   * through (SPEC-BURRITO.md §5). The two panels browse INDEPENDENTLY and may
+   * land on the same character, so P2's art carries the p2 accent wash and P2
+   * defaults to a different variant. For whichever version is in front of you the panel
    * shows a big preview in that variant's palette, the character NAME, the
    * three variant thumbnails with the current one boxed, the VARIANT name and
    * its flavour line, the WEAPON, the ADVANTAGE and DRAWBACK lines and
    * SPEED / SPREAD / REACH meters — all of it read out of the roster in
-   * T.C.BASE_WEAPONS, never restated here — plus a strip of nine pips so you
-   * can see how long the list is and where in it you are.
+   * T.C.BASE_WEAPONS, never restated here — plus a strip of one pip per
+   * character you may choose, so you can see how long the list is and where
+   * in it you are.
    *
    * Not one number on this screen belongs to a variant: the meters, the
    * advantage and the drawback are the CHARACTER's, shared by all three of
@@ -1728,6 +1968,32 @@
     weaponLabelSize: 10,
     weaponSize: 17,
     weaponGap: 9,
+
+    /* --- the rotating gun's cycle, on that SAME line (SPEC-BURRITO.md §5) --
+     * "WRAPPED" is a name, not an explanation, and a player cannot choose a
+     * character whose weapon they cannot picture. So burrito's panel prints
+     * the cycle itself — SIZZLE ▸ FLAKE ▸ PEPPER — beside the name.
+     *
+     * On the WEAPON line rather than on a row of its own, and that is a
+     * layout decision with a reason: this panel is full. The band between the
+     * variant flavour (336) and the ADVANTAGE line (382) is 46px carrying a
+     * 17px name, and squeezing a fourth row into it would have every line in
+     * the block touching its neighbours — on ALL ten panels, because the
+     * layout is shared. One composed line costs nothing to the other nine
+     * (the block is measured, so a character with no cycle lays out to the
+     * same pixels it always did) and nothing to burrito's neighbours either.
+     *
+     * cycleSize is a starting size, not a promise: the block is measured
+     * against the panel and steps down to cycleMinSize rather than run past
+     * the edge, so a longer cycle (the second balance lever in SPEC-BURRITO
+     * §1 is reordering or lengthening it) shrinks instead of overflowing.
+     */
+    cycleGap: 14,         // px between the weapon NAME and the first cycle name
+    cycleSize: 11,
+    cycleMinSize: 8,
+    cycleSepW: 16,        // slot the separating chevron sits in
+    cycleSepSize: 4,
+    cyclePad: 18,         // px of panel kept clear either side of the block
 
     advY: 382,
     drawY: 402,
@@ -1811,14 +2077,20 @@
    * lit and boxed. Nine of them is the point — a player has to be able to see
    * how long the list is and where in it they are, not just what is in front
    * of them (SPEC-CHARACTERS.md §4).
+   *
+   * NINE, or TEN once the secret is unlocked, and never nine-plus-a-blank:
+   * the strip walks the VISIBLE roster, so a locked burrito leaves no pip, no
+   * gap and no hint that a tenth pip is coming (SPEC-BURRITO.md §2). `index`
+   * is a position in that same visible list.
    */
   function rosterStrip(ctx, cx, y, index, color, tintCol, vi) {
-    const n = ROSTER.length;
+    const list = visibleRoster();
+    const n = list.length;
     if (n === 0) return;
     const x0 = cx - (n - 1) * SEL.stripCell / 2;
 
     for (let i = 0; i < n; i++) {
-      const e = ROSTER[i];
+      const e = list[i];
       const ix = Math.round(x0 + i * SEL.stripCell);
       const on = i === index;
 
@@ -1921,12 +2193,137 @@
     }
   }
 
-  /** WEAPON and its name on one line, sized as a block so the pair centres. */
+  /* -------------------------------------------------------------------------
+   * DRAWING THE CYCLE  (SPEC-BURRITO.md §5)
+   *
+   * Shared by the select panel and the HUD chip, because they are two answers
+   * to the same question and must never disagree about the order. Both read it
+   * out of T.Weapons.cycleState — the gun's own state — and neither knows what
+   * the cycle contains until it asks.
+   *
+   * The two say different things about it, on purpose:
+   *   SELECT  — every name lit. There is no gun yet and no position in the
+   *             cycle to be at; what a player needs before picking him is the
+   *             ORDER, so nothing on the row is louder than anything else.
+   *   HUD     — the NEXT name lit, the others dimmed and ruled under. There
+   *             the position is the whole point: you cannot plan a shot you
+   *             cannot predict.
+   * ---------------------------------------------------------------------- */
+
+  /* Filled in place and read back immediately — §12 forbids allocating in a
+   * per-frame path, and one select panel plus two HUD chips walk this every
+   * frame. The records are reused; only a longer cycle ever grows the array. */
+  const CYCLE_SEGS = [];
+
+  /**
+   * Fill CYCLE_SEGS from a T.Weapons.cycleState view; returns how many entries
+   * are live. Each record is { name, color } — IDENTITY ONLY. Every number
+   * about a borrowed weapon belongs to the character that owns it (the rasher
+   * is the bacon strip's, measured and shipped), and this file states none of
+   * them; it prints what the def calls itself, in the colour the def wears.
+   */
+  function fillCycleSegs(view) {
+    const wids = view ? view.wids : null;
+    if (!wids || !wids.length) return 0;
+    let n = 0;
+    for (let i = 0; i < wids.length; i++) {
+      const def = view.defs ? view.defs[i] : null;
+      let seg = CYCLE_SEGS[n];
+      if (!seg) {
+        seg = { name: '', color: PAL.ui };
+        CYCLE_SEGS[n] = seg;
+      }
+      // A cycle entry weapons.js could not resolve still gets a name, because
+      // a gap in this row is the one thing it may not have.
+      seg.name = (def && def.name) ? def.name : String(wids[i]);
+      seg.color = (def && def.color) ? def.color : PAL.ui;
+      n++;
+    }
+    return n;
+  }
+
+  /** Width of the filled cycle row at a given text size. */
+  function cycleRowWidth(ctx, n, size, sepW) {
+    let w = 0;
+    for (let i = 0; i < n; i++) {
+      if (i > 0) w += sepW;
+      w += textWidth(ctx, CYCLE_SEGS[i].name, { size: size });
+    }
+    return w;
+  }
+
+  /**
+   * NAME ▸ NAME ▸ NAME from x, centred on y. Returns the width drawn.
+   *
+   *   nextIdx  -1 lights every name equally; >= 0 lights that one, dims the
+   *            rest to `dimFrac` and rules a hairline under the lit one
+   *   alpha    the caller's own fade (an OUT player's chip is at 0.32), folded
+   *            in by hand because drawText's `alpha` REPLACES the context's
+   */
+  function drawCycleRow(ctx, x, y, n, size, sepW, sepSize,
+                        nextIdx, alpha, dimFrac, ruleDY) {
+    let px = x;
+    for (let i = 0; i < n; i++) {
+      const seg = CYCLE_SEGS[i];
+      const on = nextIdx < 0 || i === nextIdx;
+      const w = textWidth(ctx, seg.name, { size: size });
+
+      if (i > 0) chevron(ctx, px - sepW / 2, y, sepSize, 1, PAL.uiDim, alpha * 0.8);
+
+      drawText(ctx, seg.name, px, y, {
+        size: size, color: seg.color, align: 'left', shadow: true,
+        alpha: on ? alpha : alpha * dimFrac,
+        glow: (on && nextIdx >= 0) ? 8 : 0, glowColor: seg.color
+      });
+
+      // The lit name is underlined as well as brightened: on the HUD strip the
+      // three weapon colours are not equally bright, and brightness alone would
+      // make "which is next" a question about the palette.
+      if (on && nextIdx >= 0 && ruleDY) {
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.9;
+        ctx.fillStyle = seg.color;
+        ctx.fillRect(Math.round(px), Math.round(y + ruleDY),
+                     Math.max(1, Math.round(w)), 1);
+        ctx.restore();
+      }
+
+      px += w + sepW;
+    }
+    return n > 0 ? px - sepW - x : 0;
+  }
+
+  /**
+   * WEAPON and its name on one line, sized as a block so the pair centres —
+   * plus, for the rotating gun and only for it, the cycle it turns through
+   * (SPEC-BURRITO.md §5). The other nine measure and lay out exactly as they
+   * always did: with no cycle the block is the same two pieces it was.
+   */
   function weaponLine(ctx, cx, y, info) {
     const labelW = textWidth(ctx, 'WEAPON', { size: SEL.weaponLabelSize });
     const nameW = textWidth(ctx, info.weapon,
                             { size: SEL.weaponSize, bold: true });
-    const x0 = cx - (labelW + SEL.weaponGap + nameW) / 2;
+
+    const n = (info.mech === 'cycle')
+      ? fillCycleSegs(cycleForKind(info.key)) : 0;
+
+    // Fit the cycle to the panel rather than to a hope: measure, and step the
+    // size down until it is inside the panel's clear width.
+    let size = SEL.cycleSize;
+    let cycW = 0;
+    if (n > 0) {
+      const room = SEL.panelW - SEL.cyclePad * 2 -
+                   labelW - SEL.weaponGap - nameW - SEL.cycleGap;
+      cycW = cycleRowWidth(ctx, n, size, SEL.cycleSepW);
+      while (cycW > room && size > SEL.cycleMinSize) {
+        size -= 1;
+        cycW = cycleRowWidth(ctx, n, size, SEL.cycleSepW);
+      }
+    }
+
+    const total = labelW + SEL.weaponGap + nameW +
+                  (n > 0 ? SEL.cycleGap + cycW : 0);
+    const x0 = cx - total / 2;
 
     drawText(ctx, 'WEAPON', x0, y, {
       size: SEL.weaponLabelSize, color: PAL.uiDim, align: 'left'
@@ -1935,6 +2332,10 @@
       size: SEL.weaponSize, color: PAL.butter, align: 'left',
       bold: true, glow: 12
     });
+    if (n > 0) {
+      drawCycleRow(ctx, x0 + labelW + SEL.weaponGap + nameW + SEL.cycleGap, y,
+                   n, size, SEL.cycleSepW, SEL.cycleSepSize, -1, 1, 1, 0);
+    }
   }
 
   /**
@@ -2022,10 +2423,15 @@
 
     // The neighbours in the carousel, ghosted in at the sides: the roster is
     // a wheel and the panel should look like one, not like a light switch.
-    if (!entry.ready && ROSTER.length > 1 && info.index >= 0) {
-      const n = ROSTER.length;
-      const prev = ROSTER[(info.index - 1 + n) % n];
-      const next = ROSTER[(info.index + 1) % n];
+    // The wheel is the VISIBLE roster — while burrito is locked the wheel runs
+    // milk -> bread with nothing between them, because a ghost of a character
+    // who is not on the list would announce him (SPEC-BURRITO.md §2).
+    const vis = visibleRoster();
+    const here = visibleIndexOf(info);
+    if (!entry.ready && vis.length > 1 && here >= 0) {
+      const n = vis.length;
+      const prev = vis[(here - 1 + n) % n];
+      const next = vis[(here + 1) % n];
       ctx.save();
       ctx.globalAlpha = SEL.ghostAlpha;
       if (prev.sprite) {
@@ -2093,14 +2499,17 @@
               cx, SEL.barY + i * SEL.barStep, col);
     }
 
-    rosterStrip(ctx, cx, SEL.stripY, info.index, col, tintCol, vi);
+    rosterStrip(ctx, cx, SEL.stripY, here, col, tintCol, vi);
 
-    // Where you are in BOTH lists — nine characters across, three variants
-    // deep. When the pads cannot move the variant yet the line states the
-    // position without naming a button for it.
+    // Where you are in BOTH lists — nine characters across (ten with the
+    // secret earned), three variants deep. The COUNT is the visible roster's,
+    // never the table's: "3 OF 10" while burrito is still locked would be the
+    // whole secret, given away by a number (SPEC-BURRITO.md §2 and §5). When
+    // the pads cannot move the variant yet the line states the position
+    // without naming a button for it.
     const nVar = variantCountOf(info);
-    const pos = info.index >= 0
-      ? (info.index + 1) + ' OF ' + ROSTER.length
+    const pos = here >= 0
+      ? (here + 1) + ' OF ' + vis.length
       : '';
     const vpos = nVar > 0 ? (vi + 1) + ' OF ' + nVar : '';
     let hint;
@@ -2363,7 +2772,29 @@
     infW: 22,             // width of the infinity glyph on base weapons
     countSize: 9,
     lowFrac: 0.25,        // bar starts flashing red under this
-    flashHz: 6
+    flashHz: 6,
+
+    /* --- the rotating gun's cycle (SPEC-BURRITO.md §5) -------------------
+     * For burrito the second line of the chip is not "∞ UNLIMITED" — it is
+     * SIZZLE ▸ FLAKE ▸ PEPPER with the next one lit. That is not decoration:
+     * his advantage is three mechanics and his drawback is that he does not
+     * choose between them, and a player who cannot see which one is coming is
+     * not playing that trade, they are pulling a lever. It is the one weapon
+     * in the game whose HUD has to say more than a name.
+     *
+     * It goes exactly where the infinity glyph and its UNLIMITED label went,
+     * on the same baseline, so the chip keeps its footprint: cycleMaxW is 152
+     * against the 152 the widest existing chip line already spends (a 104px
+     * ammo bar, 7px, and an 'x100' count), and the row STEPS DOWN a size
+     * rather than grow past it if the cycle is ever lengthened.
+     */
+    cycleSize: 9,
+    cycleMinSize: 7,
+    cycleSepW: 11,        // slot the separating chevron sits in
+    cycleSepSize: 3,
+    cycleDim: 0.34,       // the two weapons that are NOT next
+    cycleRuleDY: 6,       // hairline under the one that is
+    cycleMaxW: 152
   };
 
   /**
@@ -2418,6 +2849,37 @@
     const by = Math.round(y + CHIP.barDY - CHIP.barH / 2);
 
     if (info.base) {
+      /* THE ROTATING GUN (SPEC-BURRITO.md §5). Burrito's second line is the
+       * cycle, with the weapon the NEXT trigger pull will fire lit and the
+       * other two dimmed — read straight out of T.Weapons.cycleState, which
+       * is the gun's own position and not a copy of it kept here.
+       *
+       * `active` is false while an upgrade token is overriding the cycle, and
+       * then this branch is not even reached: an upgrade is not a base weapon,
+       * so the chip draws its ammo bar exactly as it does for everyone else,
+       * and the cycle comes back — at the position it was left at — when the
+       * token runs out. Printing a cycle beside a full mortar would be telling
+       * the player about a shot they are not about to fire.
+       */
+      const cyc = cycleOf(ship);
+      const segs = (cyc && cyc.active) ? fillCycleSegs(cyc) : 0;
+      if (segs > 0) {
+        let size = CHIP.cycleSize;
+        let roww = cycleRowWidth(ctx, segs, size, CHIP.cycleSepW);
+        while (roww > CHIP.cycleMaxW && size > CHIP.cycleMinSize) {
+          size -= 1;
+          roww = cycleRowWidth(ctx, segs, size, CHIP.cycleSepW);
+        }
+        // Anchored at the outer edge in both mirrors, exactly like the bar:
+        // P1 grows inward from the left, P2 inward from the right.
+        const rowX = dir > 0 ? textX : textX - roww;
+        drawCycleRow(ctx, rowX, y + CHIP.barDY, segs, size,
+                     CHIP.cycleSepW, CHIP.cycleSepSize,
+                     cyc.next, alpha, CHIP.cycleDim, CHIP.cycleRuleDY);
+        ctx.restore();
+        return;
+      }
+
       // No base weapon ever runs dry, on any of the nine: an infinity sign,
       // not a full bar you would spend the whole game watching not move.
       const gx = textX + dir * (CHIP.infW / 2);
@@ -2851,6 +3313,280 @@
   }
 
   /* =========================================================================
+   * 6c. THE SECRET UNLOCK BANNER  (SPEC-BURRITO.md §2)
+   *
+   * The payoff. A player reaches wave 5 and a tenth character they had no
+   * reason to believe existed walks onto the select screen. That moment gets a
+   * banner: his sprite, SECRET UNLOCKED, his name, and the one line that tells
+   * them what to do about it.
+   *
+   * TWO CONSTRAINTS PULL AGAINST EACH OTHER HERE, and both win.
+   *
+   *   IT MUST FEEL LIKE A REWARD. Bigger than the pickup banner, with rays on
+   *   the pop and a foil glint sweeping the band, because a secret announced
+   *   in the same voice as a syrup trap is not a secret worth keeping.
+   *
+   *   IT MUST NOT COST YOU THE WAVE. It is drawn OVER LIVE PLAY — nothing
+   *   pauses, the formation keeps marching, the bombs keep falling — so it
+   *   sits in the same clear band the pickup banner uses: below the
+   *   formation's starting rows, above the bunkers at 548, nowhere near the
+   *   ship at 636. The backing is translucent, exactly like the pickup band,
+   *   so a formation that has descended into it is still visible THROUGH it,
+   *   and it is gone in 2.5 seconds.
+   *
+   * game.js owns the moment, its clock and its WORDS; this file only draws
+   * them. It parks `T.Game.reveal`, in the same shape as the wave banner and
+   * the pickup banner this file already reads:
+   *
+   *   { id, name, title, sub, color, sprite, t, duration, remaining, started }
+   *
+   * and the read is as tolerant as those two: `t` / `elapsed` / `age` for time
+   * spent, `remaining` / `timer` / `ttl` / `left` for time left, `life` /
+   * `duration` / `total` for the whole, and the object equally welcome on the
+   * game, on the session or on the board. `title` and `sub` are printed
+   * VERBATIM when they are there, exactly as the wave banner's are, because
+   * the file that decides a moment has happened is the file that gets to name
+   * it; the fallbacks below are what a build that states neither still says.
+   * `started` is game.js holding the banner back until the frame it will
+   * actually be seen on, so a false there draws nothing.
+   *
+   * Draw nothing at all when there is no such state, which is every frame of
+   * every game but about two and a half seconds of one of them.
+   * ====================================================================== */
+
+  const REVEAL = {
+    /* §2 asks for ~2.5s. The state game.js parks states its own duration and
+     * that always wins; this is what the animation runs on when it does not,
+     * and what T.UI.UNLOCK_TIME reports. It reads T.C.BURRITO_REVEAL_TIME —
+     * the SAME dial game.js falls back through — rather than restating 2.5, so
+     * a retune moves the clock and the animation together instead of leaving
+     * this file animating a 2.5s banner over a 4s one. */
+    time: (typeof C.BURRITO_REVEAL_TIME === 'number' &&
+           isFinite(C.BURRITO_REVEAL_TIME) && C.BURRITO_REVEAL_TIME > 0)
+            ? C.BURRITO_REVEAL_TIME : 2.5,
+    cy: 452,              // the pickup banner's band — the one clear stripe
+    bandH: 140,           // 382 -> 522: clear of the bunkers and of the ship
+    open: 0.14,           // seconds the letterbox band takes to open
+    popIn: 0.30,          // seconds of the scale-in overshoot
+    fadeOut: 0.36,
+    headSize: 15,
+    nameSize: 40,
+    lineSize: 13,
+    headDY: -40,
+    nameDY: -2,
+    lineDY: 34,
+    // INTEGER, for the reason PICKUP.iconScale is: the ship maps are pixel
+    // art blitted with smoothing off, and a fractional magnification hands
+    // some source pixels two screen pixels and the rest one.
+    spriteScale: 2,       // the 44x34 character at 88x68
+    spriteGap: 26,
+    spriteDY: -2,
+    rays: 12,
+    rayTime: 0.50,
+    shineTime: 0.95,      // the foil glint's sweep across the band
+    shineW: 120,
+    shineLean: 0.34       // radians it leans, so it reads as a reflection
+  };
+
+  /* Where game.js might have parked it, in the order they are asked for.
+   * `reveal` is the one the shipped game.js uses. */
+  const UNLOCK_FIELDS = ['reveal', 'revealBanner', 'unlock', 'unlockBanner',
+                         'secret', 'secretUnlock'];
+
+  /**
+   * Normalise the reveal state into { head, name, line, sprite, color,
+   * elapsed, dur }, or null when there is no banner to draw.
+   *
+   * Only an OBJECT WITH A CLOCK counts. A bare `true` would say a reveal
+   * happened without saying when, and a banner with no clock is a banner that
+   * never leaves — an object stating neither a time spent nor a time left is
+   * exactly the same thing wearing braces, so it is refused on the same rule.
+   * That matters more here than it would for any other banner in this file:
+   * the thing left on the screen forever would be the secret's name, over live
+   * play, on the machine of a player who may not have earned it. The duration
+   * is allowed to be missing (REVEAL.time stands in for it); the position on
+   * the clock is not.
+   */
+  function unlockState(g) {
+    let p = probe(g, UNLOCK_FIELDS, null);
+    if (!p) p = probe(g && g.session, UNLOCK_FIELDS, null);
+    if (!p) p = probe(currentBoard(g, null), UNLOCK_FIELDS, null);
+    if (!p || typeof p !== 'object') return null;
+    if (p.active === false || p.alive === false) return null;
+    // game.js holds the banner back until the frame it will be seen on.
+    if (p.started === false) return null;
+
+    let id = probe(p, ['id', 'kind', 'char', 'character', 'who'], null);
+    if (typeof id !== 'string' || id === '') id = SECRET_IDS[0] || '';
+    const entry = CHARS[id];
+    if (!entry) return null;                // an id this roster never heard of
+
+    let dur = probe(p, ['life', 'duration', 'total', 'max'], null);
+    if (typeof dur !== 'number' || !isFinite(dur) || dur <= 0) dur = REVEAL.time;
+
+    let elapsed;
+    const remain = probe(p, ['timer', 'ttl', 'remain', 'remaining', 'left'], null);
+    if (typeof remain === 'number' && isFinite(remain)) {
+      if (remain <= 0) return null;
+      elapsed = dur - remain;
+    } else {
+      const t = probe(p, ['t', 'elapsed', 'age'], null);
+      // No usable clock in either direction: this is the bare `true` case
+      // again, and drawing it would pin the reveal at elapsed 0 for the rest
+      // of the session. Nothing, and the frame carries on.
+      if (typeof t !== 'number' || !isFinite(t)) return null;
+      elapsed = t;
+    }
+    if (elapsed >= dur) return null;
+    if (elapsed < 0) elapsed = 0;
+
+    // The words are game.js's when it states them, this file's when it does
+    // not — and the character's own row is the last word on his art, his
+    // colour and his name, so a banner that states none of the three still
+    // introduces the right breakfast.
+    let head = probe(p, ['title', 'text', 'head'], null);
+    if (typeof head !== 'string' || head === '') head = 'SECRET UNLOCKED';
+    let name = probe(p, ['name'], null);
+    if (typeof name !== 'string' || name === '') name = entry.name || entry.key;
+    let line = probe(p, ['sub', 'subtitle', 'line'], null);
+    if (typeof line !== 'string' || line === '') {
+      line = name + ' IS NOW ON THE SELECT SCREEN';
+    }
+    let art = probe(p, ['sprite', 'ship'], null);
+    if (typeof art !== 'string' || art === '') art = entry.sprite;
+    const color = probe(p, ['color'], null) || entry.color || PAL.butter;
+
+    return { head: head, name: name, line: line, sprite: art,
+             color: color, elapsed: elapsed, dur: dur };
+  }
+
+  /** The foil glint: one leaning highlight sweeping the band, once. */
+  function revealShine(ctx, k, bandY, bandH, alpha) {
+    const x = -REVEAL.shineW + k * (C.W + REVEAL.shineW * 2);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, bandY, C.W, bandH);
+    ctx.clip();
+    ctx.globalAlpha = alpha * 0.16 * Math.sin(Math.PI * U.clamp(k, 0, 1));
+    ctx.fillStyle = PAL.chromeLt;
+    ctx.translate(x, bandY + bandH / 2);
+    ctx.rotate(REVEAL.shineLean);
+    ctx.fillRect(-REVEAL.shineW / 2, -bandH, REVEAL.shineW, bandH * 2);
+    ctx.restore();
+  }
+
+  /**
+   * The ~2.5s secret reveal, over live play (SPEC-BURRITO.md §2).
+   *
+   * Draws nothing unless game.js says a secret has just been unlocked, so on
+   * every other frame of every other game this costs one probe and a return.
+   */
+  function renderSecretBanner(ctx, g) {
+    const st = unlockState(g);
+    if (!st) return;
+
+    const col = st.color;
+    const e = st.elapsed;
+    const left = st.dur - e;
+
+    // Same motion vocabulary as the pickup banner: overshoot in, swell out.
+    let scale = 0.40 + 0.60 * easeOutBack(U.clamp(e / REVEAL.popIn, 0, 1));
+    let alpha = 1;
+    if (left < REVEAL.fadeOut) {
+      const k = U.clamp(left / REVEAL.fadeOut, 0, 1);
+      alpha = k;
+      scale *= 1 + 0.10 * (1 - k);
+    }
+
+    const cy = REVEAL.cy;
+    const bandH = Math.max(2, Math.round(REVEAL.bandH *
+                           U.clamp(e / REVEAL.open, 0, 1)));
+    const bandY = Math.round(cy - bandH / 2);
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Translucent letterbox, so a formation that has marched this low is still
+    // readable through the thing congratulating you.
+    ctx.fillStyle = 'rgba(6,8,14,0.74)';
+    ctx.fillRect(0, bandY, C.W, bandH);
+    ctx.fillStyle = col;
+    ctx.globalAlpha = alpha * 0.9;
+    ctx.fillRect(0, bandY, C.W, 2);
+    ctx.fillRect(0, bandY + bandH - 2, C.W, 2);
+    ctx.globalAlpha = alpha;
+
+    if (e < REVEAL.rayTime) {
+      const k = e / REVEAL.rayTime;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, bandY, C.W, bandH);
+      ctx.clip();
+      ctx.globalAlpha = alpha * (1 - k) * 0.6;
+      ctx.strokeStyle = PAL.butter;
+      ctx.lineWidth = 3;
+      const r0 = 52 + 320 * k;
+      ctx.beginPath();
+      for (let i = 0; i < REVEAL.rays; i++) {
+        const ang = (i / REVEAL.rays) * Math.PI * 2 - k * 0.6;
+        const cs = Math.cos(ang);
+        const sn = Math.sin(ang);
+        ctx.moveTo(C.W / 2 + cs * r0, cy + sn * r0);
+        ctx.lineTo(C.W / 2 + cs * (r0 + 34), cy + sn * (r0 + 34));
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (e < REVEAL.shineTime) revealShine(ctx, e / REVEAL.shineTime,
+                                          bandY, bandH, alpha);
+
+    ctx.save();
+    ctx.translate(C.W / 2, cy);
+    ctx.scale(scale, scale);
+
+    // Sprite on the left, the three lines on the right, the pair centred as
+    // one block so the widest line decides where the character stands.
+    const head = st.head;
+    const line = st.line;
+    const name = st.name;
+    const headW = textWidth(ctx, head, { size: REVEAL.headSize });
+    const nameW = textWidth(ctx, name, { size: REVEAL.nameSize, bold: true });
+    const lineW = textWidth(ctx, line, { size: REVEAL.lineSize });
+    const textW = Math.max(headW, Math.max(nameW, lineW));
+    const spriteW = C.SHIP_W * REVEAL.spriteScale;
+    const x0 = -(spriteW + REVEAL.spriteGap + textW) / 2;
+    const textX = x0 + spriteW + REVEAL.spriteGap;
+
+    // Variant 0, deliberately: this is the character being introduced, in the
+    // palette his roster row ships with, not in whatever the player last flew.
+    const spriteName = variantSprite(st.sprite, 0);
+    if (!spriteName || !blitCentered(ctx, spriteName, x0 + spriteW / 2,
+                                     REVEAL.spriteDY, REVEAL.spriteScale)) {
+      previewFallback(ctx, x0 + spriteW / 2, REVEAL.spriteDY,
+                      spriteW, C.SHIP_H * REVEAL.spriteScale, col);
+    }
+
+    drawText(ctx, head, textX, REVEAL.headDY, {
+      size: REVEAL.headSize, color: PAL.butter, align: 'left', bold: true,
+      glow: 16, glowColor: PAL.coil, shadow: true
+    });
+    drawText(ctx, name, textX, REVEAL.nameDY, {
+      size: REVEAL.nameSize, color: legible(col), align: 'left', bold: true,
+      glow: 26, glowColor: legible(col), shadow: true
+    });
+    // drawText's `alpha` REPLACES the context's, so the banner's own fade has
+    // to be folded in or this line would hang at 0.9 while the rest faded.
+    drawText(ctx, line, textX, REVEAL.lineDY, {
+      size: REVEAL.lineSize, color: PAL.ui, align: 'left',
+      alpha: alpha * 0.9, shadow: true
+    });
+
+    ctx.restore();
+    ctx.restore();
+  }
+
+  /* =========================================================================
    * 7. WAVE BANNER
    * ====================================================================== */
 
@@ -3235,6 +3971,28 @@
     renderPickupBanner: renderPickupBanner,
     renderTokenLabel: renderTokenLabel,
     PICKUP_TIME: PICKUP.time,
+
+    /* --- the secret tenth character (SPEC-BURRITO.md §2 and §5) ----------
+     * renderSecretBanner draws the reveal game.js signals on T.Game.reveal;
+     * UNLOCK_TIME is how long this file will animate one for when the state
+     * states no duration of its own, so the clock and the animation agree
+     * without being written down twice (PICKUP_TIME is the same arrangement
+     * for the pickup banner).
+     *
+     * characterList / characterCount are the roster AS THE PLAYER SEES IT —
+     * nine ids while burrito is locked, ten once he is not. This is the same
+     * list T.Game.visibleCharacters() walks, derived the same way from the
+     * same T.Util.isUnlocked, and it is here because ui.js has to be able to
+     * answer the question without a Game: the select screen is drawn from a
+     * payload, and the strip, the ghosts and the "n OF n" it prints must be
+     * the carousel's own list or a player ends up on a character this panel
+     * is not allowed to show.
+     */
+    renderSecretBanner: renderSecretBanner,
+    UNLOCK_TIME: REVEAL.time,
+    characterList: characterList,
+    characterCount: characterCount,
+
     renderWaveBanner: renderWaveBanner,
     renderPause: renderPause,
     renderOver: renderOver,

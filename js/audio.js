@@ -561,6 +561,15 @@
    *     tokenGrab  ~1.00s   the pickup flourish, under a 1.4s pickup banner
    *     jackpot    ~0.99s   THE FULL BREAKFAST fanfare; the rarest drop there is
    *
+   * And one from the secret-character addendum (SPEC-BURRITO section 2), on
+   * exactly the same terms — a phrase, played under its own banner, at a
+   * moment when nothing else is competing for the channel:
+   *
+   *     unlockSecret ~1.07s the reveal fanfare, under a 2.5s banner. The
+   *                         rarest cue in the file: T.Util.unlock() returns
+   *                         true exactly once, so a device that can persist
+   *                         plays it once and never again.
+   *
    * Every one of the per-weapon FIRE sounds is a blip and stays well inside
    * 0.5s. fireEspresso is a special case in the other direction — its envelope
    * is over in 0.023s and its last node stops 0.047s after t0 (0.052s after the
@@ -1420,6 +1429,115 @@
         type: 'triangle', f0: 720, f1: 430, glide: 0.030,
         t0: t0, attack: 0.001, decay: 0.030, peak: 0.07,
         filter: { type: 'lowpass', f0: 2000, q: 0.8 }
+      });
+    },
+
+    /* =====================================================================
+     * THE SECRET CHARACTER (SPEC-BURRITO section 2)
+     * ================================================================== */
+
+    /* A SECRET COMES LOOSE. This is the only cue in the game that is not a
+     * reward for scoring, and it has to say so inside its first 70ms —
+     * because the two cues nearest it in feel are both about points, and a
+     * player who mistakes this one for either of them will never go looking
+     * at the select screen:
+     *
+     *   extraLife  two bright rising DINGS, the second with a breath of high
+     *              air behind it. It opens on metal and stays metal.
+     *   jackpot    three hammered Gs, then a struck C major triad.
+     *
+     * So this one is built to differ from both on every axis at once. It
+     * OPENS on a sound neither of them — nor any other cue that ever meant
+     * POINTS — makes: a dry mechanical latch, wooden, no ring at all, the
+     * noise of something being let out. Its nearest relative in the file is
+     * crateHit's thunk, which is the point: this is a lid coming off, not a
+     * number going up. It then goes QUIET for a third of a second and rises
+     * (both of the other two start on their loudest note; this is the only
+     * cue in the game whose first half is anticipation). The payoff is ROLLED
+     * like a harp, not struck like a chord, and it is an A major ADD-NINTH —
+     * a different shape in a different key from jackpot's plain C triad and
+     * extraLife's bare G-then-C octave leap. It ends on ONE ding, not two.
+     * Different opening, different shape, different chord, different key,
+     * different count: none of it can be heard as a score going up.
+     *
+     * MIX. It clears the music mostly on REGISTER: the march is a muffled
+     * bass thump on G2-E2 (98-82Hz) under a MARCH_CUTOFF (820Hz) lowpass,
+     * while the roll runs from A3 (220Hz) up and the stamp lands at 2.2kHz —
+     * an octave and more clear of it. Two voices DO come down into the
+     * march's own octave, and they are worth naming rather than glossing: the
+     * latch bottoms out at 132Hz, and the reveal's root is a 110Hz triangle,
+     * A2 — a whole tone above the march's top note. Neither is cleared on
+     * register, so both are cleared on SHAPE instead. The latch is a 0.07s
+     * transient with no ring, so it reads as a click rather than as a pitch
+     * competing with the bass line. The root is a sustain, not a transient,
+     * but it is deliberately the quiet half of that meeting — peak 0.18
+     * against a march note's MARCH_LEVEL 0.42, and gone 0.45s after it lands
+     * — so it reads as weight under the chord rather than as a note in the
+     * march's own line.
+     *
+     * Measured off the scheduled envelopes, the cue's worst instant sums to
+     * 1.03 against jackpot's 1.15 and tokenGrab's 0.79 — 2.5x a march note
+     * and, after MASTER_LEVEL, 0.36 at the mix bus: comfortably clear of the
+     * music and just as comfortably under the limiter's -6dB (0.5) threshold,
+     * so it never has to duck the march to be heard. Nothing else is on the
+     * channel when it plays: game.js holds the cue back until the state is
+     * 'play', so the WAVE 5 banner and its waveStart fanfare (2.0s, 0.57s)
+     * are both finished before the first latch tick.
+     *
+     * LENGTH ~1.07s, comfortably inside its 2.5s banner. Every number here is
+     * a literal, so nothing reaches an AudioParam that was not written down
+     * in this recipe; the two values that CAN come from outside — the caller's
+     * gain and the variant detune — are both Number.isFinite-guarded in play()
+     * before this function is ever entered. */
+    unlockSecret: function (g, t0) {
+      // 1. THE LATCH — a bolt sliding back. Dry and wooden, over in 70ms.
+      tone(g, {
+        type: 'triangle', f0: 300, f1: 132, glide: 0.05,
+        t0: t0, attack: 0.001, decay: 0.065, peak: 0.30,
+        filter: { type: 'lowpass', f0: 820, f1: 300, q: 0.9 }
+      });
+      noise(g, {                                  // the catch letting go
+        t0: t0, attack: 0.001, decay: 0.040, peak: 0.16, rate: 1.5,
+        filter: { type: 'bandpass', f0: 2000, f1: 1000, q: 1.3, glide: 0.040 }
+      });
+
+      // 2. THE HUSH — an airy rise opening upward into the reveal. Quiet on
+      // purpose: this half is anticipation, not the event.
+      const reveal = t0 + 0.40;
+      noise(g, {
+        t0: t0 + 0.04, attack: 0.070, sustain: 0.10, decay: 0.17, peak: 0.10,
+        filter: { type: 'highpass', f0: 900, f1: 7200, q: 0.7, glide: 0.33 }
+      });
+      tone(g, {                                   // a fifth lifting under it
+        type: 'sine', f0: 293.66, f1: 440.00, glide: 0.32,
+        t0: t0 + 0.04, attack: 0.060, decay: 0.29, peak: 0.09
+      });
+
+      // 3. THE REVEAL — A major add-ninth (A C# E B C# E A), ROLLED upward
+      // across two octaves like a harp rather than struck as a block, so it
+      // lands as something opening rather than as a hit. Peaks taper as the
+      // roll climbs so seven overlapping notes never stack into a shout.
+      const roll = [220.00, 277.18, 329.63, 493.88, 554.37, 659.25, 880.00];
+      for (let i = 0; i < roll.length; i++) {
+        tone(g, {
+          type: 'triangle', f0: roll[i],
+          t0: reveal + i * 0.032, attack: 0.004, sustain: 0.10, decay: 0.34,
+          peak: 0.15 - i * 0.008,
+          filter: { type: 'lowpass', f0: 4600, f1: 2800, q: 0.7 }
+        });
+      }
+      tone(g, {                                   // the root, for weight
+        type: 'triangle', f0: 110.00,
+        t0: reveal, attack: 0.008, sustain: 0.14, decay: 0.30, peak: 0.18,
+        filter: { type: 'lowpass', f0: 820, q: 0.6 }
+      });
+
+      // 4. THE STAMP — one ding on the chord's major third, high up, with a
+      // wash of air behind it. ONE, where extraLife has two.
+      ding(g, reveal + 0.20, 2217.46, 0.26, 0.42);
+      noise(g, {
+        t0: reveal + 0.20, attack: 0.012, decay: 0.30, peak: 0.09,
+        filter: { type: 'highpass', f0: 5600, q: 0.6 }
       });
     }
   };

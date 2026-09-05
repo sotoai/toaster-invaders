@@ -399,7 +399,15 @@
   function shotVariant(ship, wid) {
     if (!ship) return null;
     const def = BASE_BY_WID[wid];
-    if (!def || def.char !== ship.kind) return null;
+    if (!def) return null;
+    /* A BORROWED weapon is still fired by this ship. BURRITO's WRAPPED cycles
+     * through three weapons that belong to three other characters (see the
+     * WRAPPED block below), and those shots wear HIS variant index: the sprite
+     * comes out of the borrowed weapon's own map at that index — maple-glazed
+     * bacon, an almond flake — while the trail colour and the fire-sound
+     * detune stay his, because those are the two identity fields the burrito
+     * actually owns. Still identity only, still not a number. */
+    if (def.char !== ship.kind && !cycleBorrows(ship, wid)) return null;
     return variantOf(ship);
   }
 
@@ -1016,6 +1024,13 @@
     const def = byId(id);
     const prev = ship.weapon;
     if (prev && prev.def) killAttached(liveBeam(ship, prev));
+    /* SPEC-BURRITO §1: the rotating gun's position resets ON DEATH, and a dead
+     * ship being reverted to its base weapon is the one call that says so.
+     * Ammo-out and a token pickup both happen to a LIVING ship and both keep
+     * the position — which is exactly what "reverts to burrito at his current
+     * place in the cycle" means. A new game builds new ships, and a new ship
+     * has no position to keep. */
+    if (ship.dead || ship.out || !ship.alive) cycleReset(ship);
     const w = {
       def: def,
       ammo: def.ammo || 0,
@@ -1369,8 +1384,30 @@
     // A dead ship is not waiting on a refire timer; it is waiting to respawn.
     if (!ship || ship.dead || ship.out || !ship.alive) return false;
     const w = ship.weapon;
-    if (!w || w.def !== def) return false;          // swapped to an upgrade
+    if (!w || !w.def) return false;
+    /* Normally the shot's weapon IS the ship's weapon, and anything else means
+     * they swapped to an upgrade mid-flight — no husk. BURRITO never matches:
+     * the trigger says WRAPPED and the shot in the air says SIZZLE. So the
+     * rotating gun also owns any shot of a weapon it is currently cycling
+     * through, which is what keeps his refire (and with it the one-live-shot
+     * rule) working at all. SPEC-BURRITO §1. */
+    if (w.def !== def && !(isCycleDef(w.def) && cycleHas(def.id))) return false;
     return true;
+  }
+
+  /**
+   * How long a spent shot holds the trigger closed.
+   *
+   * The weapon's own `refire`, except on the rotating gun, where it is scaled
+   * by T.C.BURRITO_REFIRE_MULT — the ONE balance dial SPEC-BURRITO §1 gives
+   * that character, so bringing him into the band never means retuning the
+   * bacon strip, the croissant or the pepper grinder, all three of which are
+   * already measured into it.
+   */
+  function refireOf(s) {
+    const r = s.def.refire;
+    const w = s.owner && s.owner.weapon;
+    return (w && isCycleDef(w.def)) ? r * cycleRefireMult() : r;
   }
 
   function beginSpent(s) {
@@ -1382,7 +1419,7 @@
     s.vx = 0; s.vy = 0; s.gravity = 0;
     s.attached = false;
     s.t = 0;
-    s.life = s.def.refire;
+    s.life = refireOf(s);
     return true;
   }
 
@@ -1946,6 +1983,203 @@
       ctx.globalAlpha = 1;
     }
     defaultDraw(ctx, s);
+  }
+
+  /* =========================================================================
+   * BURRITO — WRAPPED: the rotating gun  (SPEC-BURRITO.md §1)
+   *
+   * The secret tenth character has no weapon of his own. Every shot fires the
+   * NEXT wid in T.C.BURRITO_CYCLE — sizzle, then flake, then pepper, then
+   * round again — AS that weapon: its def, its speed, its hitbox, its sound,
+   * its refire and its real mechanic. The rasher still lays its burning trail,
+   * the flake still inherits your sideways speed, the grinder still throws
+   * three pellets across its own spread.
+   *
+   * NOTHING IS RE-IMPLEMENTED HERE. emitWrapped hands the trigger pull to the
+   * parent weapon's own emitter, exactly the way THE FULL BREAKFAST hands its
+   * four barrels to the four upgrades it fires, because a copy of a tuned
+   * weapon is a second source of truth and it will drift away from the
+   * original the first time anybody tunes one of them.
+   *
+   * Delegation pays for itself twice over:
+   *   - the classic ONE LIVE SHOT rule needs no special case at all. Each
+   *     borrowed projectile carries its PARENT's base def, so hasLiveShot()
+   *     already counts it, and a pepper volley is still three pellets that
+   *     must all clear (and husk) before the trigger unlocks — the volley is
+   *     the shot, exactly as it is for the pepper grinder himself.
+   *   - the refire husk needs two small allowances, both stated where they
+   *     belong: spentEligible() has to recognise a shot whose def is not the
+   *     ship's current weapon (for burrito it never is), and refireOf() scales
+   *     the husk by this character's one dial, T.C.BURRITO_REFIRE_MULT.
+   *
+   * The cycle position lives ON THE SHIP — `ship.wCycle`, the index of the
+   * NEXT weapon — and never in this module and never in the weapon state:
+   *   - two players both on burrito cycle independently, because there is no
+   *     shared counter for them to share;
+   *   - it survives a wave change and an upgrade token. Picking a token up and
+   *     running it dry rebuilds ship.weapon, and the ship is still standing
+   *     exactly where it was in the cycle;
+   *   - it advances in emitWrapped, which is only ever reached from fire(),
+   *     which is only ever reached past canFire() — so a trigger pull that was
+   *     blocked (live shot on screen, refire still running, dead) cannot skip
+   *     a weapon;
+   *   - equip() clears it for a ship that is dead or out, which is the death
+   *     reset; a new game builds new ships, which is the new-game reset.
+   * ====================================================================== */
+
+  /** The roster row `mech` name that marks the rotating gun. Data, not a kind. */
+  const CYCLE_MECH = 'cycle';
+
+  /* What he shoots if T.C ever hands us an empty cycle: the one weapon that
+   * exists however broken the roster data is. It is never reached in a shipped
+   * build — BURRITO_CYCLE is three wids — and it is here so that a harness
+   * sweeping the cycle down to nothing gets a working gun instead of a throw. */
+  const CYCLE_FALLBACK = ['butter'];
+
+  /** The wids the cycle turns through, straight out of T.C (SPEC-BURRITO §1). */
+  function cycleList() {
+    const list = C.BURRITO_CYCLE;
+    return (list && list.length > 0) ? list : CYCLE_FALLBACK;
+  }
+
+  /** Is this weapon def the rotating gun? Read off its roster row's `mech`. */
+  function isCycleDef(def) {
+    return !!def && def.mech === CYCLE_MECH;
+  }
+
+  /**
+   * Does this ship's CHARACTER shoot the rotating gun?
+   *
+   * Deliberately asked of the character and not of ship.weapon: a burrito
+   * holding the espresso repeater is still a burrito, his cycle is still
+   * standing where he left it, and the HUD still has a cycle to draw.
+   */
+  function isCycleShip(ship) {
+    return !!ship && isCycleDef(BASE_BY_WID[baseFor(ship.kind)]);
+  }
+
+  /** Is `wid` one of the weapons the cycle borrows? */
+  function cycleHas(wid) {
+    const list = cycleList();
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === wid) return true;
+    }
+    return false;
+  }
+
+  /** True when `ship` is firing `wid` only because the cycle handed it to him. */
+  function cycleBorrows(ship, wid) {
+    return isCycleShip(ship) && cycleHas(wid);
+  }
+
+  /**
+   * The index of the NEXT weapon this ship will fire. Always in range, whatever
+   * is on the ship — a ship built before this file existed, or one whose cycle
+   * has been retuned shorter underneath it, reads as the first weapon.
+   */
+  function cycleIndex(ship) {
+    const n = cycleList().length;
+    const i = ship ? ship.wCycle : 0;
+    if (typeof i !== 'number' || !isFinite(i) || i < 0) return 0;
+    return (i | 0) % n;
+  }
+
+  /** Back to the first weapon in the cycle: a death, or a new game. */
+  function cycleReset(ship) {
+    if (ship) ship.wCycle = 0;
+  }
+
+  /** Step to the next weapon. Called ONLY once a shot has actually left. */
+  function cycleAdvance(ship) {
+    if (!ship) return;
+    ship.wCycle = (cycleIndex(ship) + 1) % cycleList().length;
+  }
+
+  /** The balance dial (SPEC-BURRITO §1), read live so a harness can sweep it. */
+  function cycleRefireMult() {
+    const k = C.BURRITO_REFIRE_MULT;
+    return (typeof k === 'number' && isFinite(k) && k > 0) ? k : 1;
+  }
+
+  /**
+   * The weapon state the borrowed emitter is handed.
+   *
+   * It is the ship's own state with ONE field swapped: `def` is the PARENT
+   * weapon's, which is what makes baseSfx play the rasher's sound at the
+   * rasher's pitch and emitBase resolve the rasher's wid. `phase` rides across
+   * because two of the base emitters alternate on it.
+   *
+   * ship.weapon itself is deliberately NOT mutated, not even for the length of
+   * the call: spawn() asks what this ship is while the borrowed projectile is
+   * being built, and the honest answer there is still WRAPPED — that is how
+   * the shot ends up wearing the burrito's variant rather than the bacon
+   * strip's. Cached per ship: one object per player per life, none per shot.
+   */
+  function borrowState(ship, w, def) {
+    let b = ship.wBorrow;
+    if (!b) {
+      b = { def: null, ammo: 0, timer: 0, cooldown: 0, phase: 0, beam: null };
+      ship.wBorrow = b;
+    }
+    b.def = def;
+    b.phase = w.phase;
+    b.ammo = 0;
+    b.timer = 0;
+    b.cooldown = 0;
+    b.beam = null;
+    return b;
+  }
+
+  /** Fire the next weapon in the cycle, as that weapon, then turn the cycle. */
+  function emitWrapped(ship, board, w, mx, my) {
+    const list = cycleList();
+    const wid = list[cycleIndex(ship)];
+    const def = BASE_BY_WID[wid];
+    const mech = def ? MECH[wid] : null;
+    if (def && mech && mech.emit) {
+      mech.emit(ship, board, borrowState(ship, w, def), mx, my);
+    } else {
+      // A cycle entry that is not a base weapon: fire his own fallback row
+      // (the sizzle numbers, see T.C.BASE_WEAPONS.burrito) rather than nothing.
+      emitBase(ship, board, w, mx, my);
+    }
+    cycleAdvance(ship);
+  }
+
+  /**
+   * The cycle, for the HUD chip and the select panel (SPEC-BURRITO §5).
+   *
+   * @param   {object} ship
+   * @returns {?{wids: string[], defs: object[], next: number, wid: string,
+   *             def: object, active: boolean, mult: number}}
+   *          null for every character that is not the rotating gun.
+   *          `wids` is the ordered cycle and `next` indexes the weapon the NEXT
+   *          trigger pull will fire (so `wid` / `def` are that weapon, and
+   *          `defs` carries all of them for their names and colours).
+   *          `active` is false while an upgrade token is overriding the cycle
+   *          — the position is kept, and he comes back to it.
+   *
+   * The object is cached per ship and rewritten in place, so a HUD asking for
+   * it every frame allocates nothing: read it, do not keep it.
+   */
+  function cycleState(ship) {
+    if (!isCycleShip(ship)) return null;
+    const list = cycleList();
+    let v = ship.wCycleView;
+    if (!v) {
+      v = { wids: null, defs: [], next: 0, wid: '', def: null,
+            active: false, mult: 1 };
+      ship.wCycleView = v;
+    }
+    v.wids = list;
+    if (v.defs.length !== list.length) v.defs.length = list.length;
+    for (let i = 0; i < list.length; i++) v.defs[i] = DEFS[list[i]] || null;
+    v.next = cycleIndex(ship);
+    v.wid = list[v.next];
+    v.def = v.defs[v.next];
+    v.active = isCycleDef(ship.weapon && ship.weapon.def);
+    v.mult = cycleRefireMult();
+    return v;
   }
 
   /* =========================================================================
@@ -2662,7 +2896,15 @@
     ghost:   { emit: emitHoney,  update: updateHoney,  hit: consume, draw: drawHoney },
     angle:   { emit: emitRind,   update: updateRind,   hit: consume, draw: drawRind },
     trail:   { emit: emitSizzle, update: updateSizzle, hit: consume, draw: drawSizzle },
-    grow:    { emit: emitSplash, update: updateSplash, hit: consume, draw: drawSplash }
+    grow:    { emit: emitSplash, update: updateSplash, hit: consume, draw: drawSplash },
+
+    /* WRAPPED is the one mechanic that does not describe a projectile: it
+     * hands the trigger to whichever of T.C.BURRITO_CYCLE's weapons is next,
+     * and what leaves the barrel is THAT weapon's shot, updated, resolved and
+     * drawn by THAT weapon's row above. The three fields beside `emit` are the
+     * fallback for a shot that actually carries the wid 'wrapped', which only
+     * a broken cycle can produce (see emitWrapped). */
+    cycle:   { emit: emitWrapped, update: updateBase,   hit: consume, draw: drawBase }
   };
 
   const BASE_IDS = Object.keys(BASE);
@@ -2983,6 +3225,17 @@
      * weapon uses is looked up from the PARENT character row. */
     variantOf: variantOf,
     variantIndexOf: variantIndexOf,
+
+    /* BURRITO's rotating gun (SPEC-BURRITO.md §1). cycleState(ship) is how the
+     * HUD chip and the select panel read the cycle — the ordered wids, their
+     * defs, and the index of the NEXT one — and it is the only way in: the
+     * position itself lives on the ship so two players never share one, and
+     * nothing outside this file may reach for it. cycleReset(ship) puts a ship
+     * back on the first weapon; equip() already does it on death, and a new
+     * game gets new ships, so it is exposed for a caller that reuses a ship
+     * object across games rather than because the flow needs it. */
+    cycleState: cycleState,
+    cycleReset: cycleReset,
 
     // per-ship state
     equip: equip,

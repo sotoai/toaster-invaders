@@ -4,6 +4,8 @@
 
 ### ▶ [Play it](https://sotoai.github.io/toaster-invaders/)
 
+*Nine characters are listed below. There is at least one this README is not going to tell you about.*
+
 Fifty-five winged chrome toasters march down the screen. You are a slice of untoasted
 bread, or a jam jar, or a coffee mug, or one of six other things off the breakfast
 table, and you have three lives and one shot on screen at a time to stop them.

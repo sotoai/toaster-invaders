@@ -20,23 +20,26 @@
  * in the roster, and the fifteen upgrade projectiles.
  *
  * After that come the CHARACTER VARIANTS (SPEC-VARIANTS.md section 3). There
- * are 27 playable versions of the nine characters and NOT ONE of them is a new
+ * are three playable versions of every character and NOT ONE of them is a new
  * drawing: a variant is a character's existing pixel map rasterized through a
  * different colour key, plus an optional detail overlay map composited on top.
- * That is what keeps 27 versions looking like one family, and it is why the
- * balance measured over 720 seeded runs survives the feature — see
+ * That is what keeps thirty versions looking like one family, and it is why
+ * the balance measured over 720 seeded runs survives the feature — see
  * buildCharacterVariants() at the bottom of the file.
  *
  * The middle section is the rest of the playable roster (SPEC-CHARACTERS.md
  * section 4): the seven characters that join the bread and the jam jar —
  * croissant, coffee mug, pepper grinder, honey dipper, cheese wedge, bacon
  * strip and milk carton — each with an idle and a firing-recoil frame, its own
- * base projectile and a half-size HUD life icon. They are drawn to the SAME
- * rules as bread0 and jam0 — a dark outline colour running the whole way
- * round, brows one pixel outboard of the eyes, a straight set mouth that opens
- * on the recoil frame, and no colour that is not already in T.C.PAL — because
- * nine characters standing in a select-screen carousel have to read as one
- * family rather than nine separate drawings.
+ * base projectile and a half-size HUD life icon. Last of all, and drawn to the
+ * same rules, is the secret tenth: the foil-wrapped BURRITO of SPEC-BURRITO.md
+ * section 4, who has a body pair and a life icon but NO projectile of his own,
+ * because his gun cycles three that already belong to other characters. They
+ * are all drawn to the SAME rules as bread0 and jam0 — a dark outline colour
+ * running the whole way round, brows one pixel outboard of the eyes, a
+ * straight set mouth that opens on the recoil frame, and no colour that is not
+ * already in T.C.PAL — because ten characters standing in a select-screen
+ * carousel have to read as one family rather than ten separate drawings.
  *
  * Classic <script> file: no imports, no exports, no build step.
  * ========================================================================= */
@@ -82,6 +85,9 @@
     lifeCheese: 1,
     lifeBacon: 1,
     lifeMilk: 1,
+
+    // The secret tenth character's life icon, same 22x17 exception again.
+    lifeBurrito: 1,
 
     // Odd-width base projectiles (see above).
     drip: 1,
@@ -174,7 +180,8 @@
    * its life icon so a character is the same handful of colours everywhere it
    * appears. Every entry is a T.C.PAL colour: the roster is built out of the
    * existing breakfast palette rather than seven new private ones, which is
-   * most of what makes nine characters look like one set.
+   * most of what makes nine characters look like one set. The secret tenth
+   * follows the same rule one section down.
    *
    * In all seven, K is the FACE — brows, eyes and mouth — exactly as it is in
    * KEY_BREAD and KEY_JAM. */
@@ -247,6 +254,31 @@
     g: PAL.glassDark,   // dairy band
     G: PAL.glass,       // lettering on the band
     K: PAL.burnt        // face
+  };
+
+  /* --- the secret tenth character (SPEC-BURRITO.md sections 3 and 4) -------
+   * BURRITO is two materials stacked: a griddled tortilla holding its filling
+   * at the top, and the foil sheath the rest of him is wrapped in. C/L/D are
+   * the foil — body, the bright crease down its left side, and the scorched
+   * creases and outline; R/b/d are the tortilla, darkest first, the same
+   * outline-then-body-then-shading order the other nine use for their skins;
+   * J/j are the filling and its lit edge. K is the face, as everywhere else.
+   *
+   * These nine MAP characters and no others are what his three variant keys in
+   * T.C.BASE_WEAPONS.burrito.variants give colours to, and this key must give
+   * each of them the same colour variant 0 (CARNE ASADA) does — build() proves
+   * that with assertVariantZeroMatchesBase(), because index 0 is by definition
+   * the character as this file draws him. */
+  const KEY_BURRITO = {
+    C: PAL.burritoFoil,    // foil sheath
+    L: PAL.burritoFoilLt,  // the bright crease down one side of it
+    D: PAL.burritoFoilDk,  // scorched creases, the fold shadow, the outline
+    R: PAL.cinnamon,       // griddled tortilla, outline
+    b: PAL.cinnamonDust,   // tortilla body
+    d: PAL.crust,          // tortilla shading where the wrap folds open
+    J: PAL.carneAsada,     // filling
+    j: PAL.carneChar,      // its lit, charred edge
+    K: PAL.burnt           // face
   };
 
   // Bacon's trail ember: a coil spark going out.
@@ -428,7 +460,15 @@
 
     milk0: KEY_MILK, milk1: KEY_MILK,
     splash0: KEY_MILK, splash1: KEY_MILK, splash2: KEY_MILK,
-    lifeMilk: KEY_MILK
+    lifeMilk: KEY_MILK,
+
+    /* --- the secret tenth character (SPEC-BURRITO.md section 4) -----------
+     * Body frames and life icon only. He has NO projectile art of his own:
+     * his gun cycles sizzle / flake / pepperPellet, which are the bacon
+     * strip's, the croissant's and the pepper grinder's, and are already
+     * registered above. */
+    burrito0: KEY_BURRITO, burrito1: KEY_BURRITO,
+    lifeBurrito: KEY_BURRITO
   };
 
   /* -------------------------------------------------------------------------
@@ -484,7 +524,7 @@
     /* --- the other seven characters (SPEC-CHARACTERS.md section 4) --------
      * Every playable body is 44x34, the same box as bread0 and jam0, because
      * T.C.SHIP_W / SHIP_H and the ship collision box are one pair of numbers
-     * for all nine — a character drawn a pixel wider would be a character with
+     * for all ten — a character drawn a pixel wider would be a character with
      * a different hitbox. The projectile sizes are the hitboxes out of
      * T.C.BASE_WEAPONS, and the life icons are half-size like the first two. */
     croissant0: [44, 34], croissant1: [44, 34],
@@ -505,7 +545,16 @@
 
     lifeCroissant: [22, 17], lifeMug: [22, 17], lifePepper: [22, 17],
     lifeHoney: [22, 17], lifeCheese: [22, 17], lifeBacon: [22, 17],
-    lifeMilk: [22, 17]
+    lifeMilk: [22, 17],
+
+    /* --- the secret tenth character (SPEC-BURRITO.md section 4) -----------
+     * The same 44x34 ship box and the same 22x17 life icon as the other nine.
+     * He is a secret to the PLAYER, not to the collision maths: a character
+     * the select screen hides until wave 5 still has to be exactly one ship
+     * wide when it finally reaches the play field. No projectile row, because
+     * he borrows three that are already up there. */
+    burrito0: [44, 34], burrito1: [44, 34],
+    lifeBurrito: [22, 17]
   };
 
   /* The fifteen weapon icons are identical in every respect except their art,
@@ -2114,6 +2163,73 @@
       '..DDDDDDDDDDDDDDDDDD..'
     ],
 
+    /* ---- BURRITO, THE SECRET TENTH (SPEC-BURRITO.md section 4) ------------
+     * A foil-wrapped burrito standing on end, in four bands:
+     *
+     *   rows 0-4   the open end of the wrap, cut on a SLANT so the right side
+     *              stands higher than the left — a two-pixel tortilla ring
+     *              (R outline, b body) around a mass of filling, J with j
+     *              flecks through it. The slant is what stops the top reading
+     *              as the rim of a cup;
+     *   rows 5-6   the torn edge of the foil, climbing from the left, with
+     *              bare tortilla still showing down the right;
+     *   rows 7-15  the foil sheath. It is lit as a CYLINDER, not a box: one
+     *              bright L column at 5 against the D outline at 4, a
+     *              two-column D shadow at 16-17 on the far side, and two
+     *              creases running unbroken down columns 8 and 13 from row 13
+     *              to the base. Foil catches light in hard lines, so every one
+     *              of those is a straight run rather than a soft gradient;
+     *   row 16     the crimped end the foil is twisted shut at.
+     *
+     * The face sits on exactly the pepper grinder's face grid — brows at
+     * columns 6-7 and 14-15, eyes one pixel inboard, mouth at 9-12 — because
+     * the grinder is the near miss on body width and copying its face outright
+     * puts ALL of the difference into the shape around it, where a player can
+     * actually see it, instead of into a second competing face style.
+     *
+     * Frame 1 is the recoil, and does the three things every other character's
+     * does: raises and thickens the brows, opens the mouth to a wide
+     * rectangle, and jolts what he is holding — the filling sloshes and a
+     * fleck of it flies out past the wrap, the way the carton throws milk. */
+    burrito0: [
+      '........RbbbbbbbR.....',
+      '.....RbjJJjJJJjJbR....',
+      '....RbbJJjJJJJJbbR....',
+      '....RbbJJJjJJjJbbR....',
+      '....RbdJJJjjJJJdbR....',
+      '....DLCCCDdbbbbdbR....',
+      '....DLCCCCCCCDdbbR....',
+      '....DLCCCCCCCCCCDD....',
+      '....DLKKCCCCCCKKDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCCCKKKKCCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '.....DDCDCCCCDCDD.....'
+    ],
+    burrito1: [
+      '........RbbbbbbbR..j..',
+      '.....RbjjJJjJJJjbR.j..',
+      '....RbbJjJJjJJJjbR....',
+      '....RbbJJjJJjJJJbR....',
+      '....RbdJJJjjJJJdbR....',
+      '....DLCCCDdbbbbdbR....',
+      '....DLCCCCCCCDdbbR....',
+      '....DLKKKCCCCKKKDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCCKKKKKKCCDD....',
+      '....DLCCKKKKKKCCDD....',
+      '....DLCCCKKKKCCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '.....DDCDCCCCDCDD.....'
+    ],
+
     /* ---- BASE PROJECTILES -------------------------------------------------
      * One per character, all of them travelling UP the screen, so the leading
      * edge of every shape is its TOP row. Four of them are an odd number of
@@ -2397,6 +2513,40 @@
       '..DDDDDDDDDDDDDDDDDD..',
       '......................',
       '......................'
+    ],
+
+    /* The secret tenth's icon, same 1:1 treatment as the nine above it: the
+     * open wrap thinned from five rows to four, and one crease row dropped, so
+     * the face still lands at 22x17. The slanted cut end and the torn foil edge
+     * are kept in full — at this size they are what tells him apart from the
+     * bacon strip in the HUD.
+     *
+     * NO BROW ROW, and that is not an omission: every one of the nine icons
+     * above spends its face on TWO eye rows and a mouth and drops the brows the
+     * body frames wear. At 1:1 a brow sits one pixel outboard of an eye that is
+     * itself only two pixels tall, so the three rows fuse into one dark
+     * wedge: the angry look survives at 44x34 and smudges at 22x17. This
+     * icon is also the HUD weapon chip for WRAPPED (ui.js draws a base weapon's
+     * character life icon in place of the roundel the fifteen upgrades have),
+     * so it is on screen every frame of his life and has to stay legible. */
+    lifeBurrito: [
+      '........RbbbbbbbR.....',
+      '.....RbjJJjJJJjJbR....',
+      '....RbbJJjJJJJJbbR....',
+      '....RbdJJJjjJJJdbR....',
+      '....DLCCCDdbbbbdbR....',
+      '....DLCCCCCCCDdbbR....',
+      '....DLCCCCCCCCCCDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCKKCCCCKKCDD....',
+      '....DLCCCCCCCCCCDD....',
+      '....DLCCCKKKKCCCDD....',
+      '....DLCCCCCCCCCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '....DLCCDCCCCDCCDD....',
+      '.....DDCDCCCCDCDD.....',
+      '......................',
+      '......................'
     ]
   };
 
@@ -2481,9 +2631,9 @@
   /* -------------------------------------------------------------------------
    * CHARACTER VARIANTS   (SPEC-VARIANTS.md section 3)
    *
-   * Every one of the nine characters has three variants — 27 playable versions
-   * — and every one of them reuses the character's EXISTING pixel maps. A
-   * variant is two things and nothing else:
+   * Every one of the ten characters has three variants — thirty playable
+   * versions — and every one of them reuses the character's EXISTING pixel
+   * maps. A variant is two things and nothing else:
    *
    *   a colour KEY   the same map characters pointed at different T.C.PAL
    *                  entries, so STRAWBERRY and PEANUT BUTTER are the same jar
@@ -2496,7 +2646,7 @@
    * they belong to. Nothing here reads a number off a variant, because there
    * are none to read: SPEC-VARIANTS.md section 1 makes a variant cosmetic
    * precisely so the +/-20% balance band measured across 720 seeded runs
-   * carries over to all 27 unchanged.
+   * carries over to all thirty unchanged.
    *
    * Variants are cached under a derived name — `bread0~1` is variant 1 of
    * `bread0` — so get / draw / drawCentered / tint work on a variant with no
@@ -2661,7 +2811,7 @@
 
     const name = baseMapName + VARIANT_SEP + variantIndex(baseMapName, variantId);
     // Errors from here down quote the variant AND the sprite, because "which
-    // of the 27" is the first thing you need to know when one fails.
+    // of the thirty" is the first thing you need to know when one fails.
     const label = name + ' (variant ' + variantId + ')';
     const merged = overlayMap ? compositeOverlay(label, map, overlayMap) : map;
     // Collected from the base map and the overlay SEPARATELY, never from the
@@ -2694,8 +2844,9 @@
    * are pixel-identical output — and this costs a map scan rather than a
    * canvas readback per sprite at boot.
    *
-   * This is the cheapest possible guarantee that adding 27 versions has not
-   * disturbed the nine that were measured into the balance band.
+   * This is the cheapest possible guarantee that adding three versions of a
+   * character has not disturbed the character that was measured into the
+   * balance band.
    */
   function assertVariantZeroMatchesBase(baseMapName, variantId, key, overlayMap) {
     const map = MAPS[baseMapName];
@@ -2721,7 +2872,7 @@
   }
 
   /**
-   * Rasterize all 27 variants: for each of the nine characters, each variant's
+   * Rasterize every variant: for each of the ten characters, each variant's
    * idle frame, firing frame and HUD life icon through its `key`/`overlay`,
    * and its projectile (all three splash widths, for the milk carton) through
    * its `shotKey`/`shotOverlay`.
@@ -2733,10 +2884,13 @@
    * what section 5 asks the variant names and icons to do.
    *
    * Called by build(), eagerly, and it stays eager because the cost was
-   * measured rather than guessed: 114 variant sprites in 5.3 ms in Chrome
-   * (46 microseconds each, inside a 7.7 ms whole-roster build) and 1.9 ms
-   * under node. That is a one-off cost paid once, before the first frame is
-   * ever requested. Rasterizing lazily would save those 5 ms of a boot nobody
+   * measured rather than guessed: the nine public characters' 114 variant
+   * sprites took 5.3 ms in Chrome (46 microseconds each, inside a 7.7 ms
+   * whole-roster build) and 1.9 ms under node; the secret tenth adds twelve
+   * more rasterizations at that same per-sprite cost, three of which land on
+   * the sizzle map bacon already built and are byte-identical to it. That is a
+   * one-off cost paid once, before the first frame is ever requested.
+   * Rasterizing lazily would save those 5 ms of a boot nobody
    * is watching and spend them instead as a hitch the first time a player
    * scrolls the variant picker — a worse trade in the only place it shows.
    * scratchpad/variant-sprites.js re-measures both numbers.
@@ -2860,7 +3014,7 @@
       }
     }
 
-    // The 27 playable versions, recoloured off the maps just built above.
+    // The thirty playable versions, recoloured off the maps just built above.
     buildCharacterVariants();
 
     built = true;
@@ -2958,7 +3112,7 @@
 
     // Character variants (SPEC-VARIANTS.md section 3). buildVariant() is here
     // for anything that needs a recolour the roster does not already carry;
-    // the 27 in T.C.BASE_WEAPONS are built by build() and are reached with
+    // the thirty in T.C.BASE_WEAPONS are built by build() and are reached with
     // variantName(), which every call site should use in place of a raw name.
     buildVariant: buildVariant,
     variantName: variantName

@@ -9,10 +9,12 @@
  *             Other files READ these; nobody else defines or overwrites them.
  *             That includes BASE_WEAPONS / CHARACTER_ORDER: the nine playable
  *             characters and every number that makes their base weapons
- *             shoot differently (SPEC-CHARACTERS.md).
+ *             shoot differently (SPEC-CHARACTERS.md), plus the secret tenth
+ *             and the one number that tunes him (SPEC-BURRITO.md).
  *   T.Util  — small dependency-free helpers: math, a seeded RNG, the formation
- *             march-timing curve, AABB overlap, a clock, safe localStorage, and
- *             a minimal object pool for the no-allocation hot loops.
+ *             march-timing curve, AABB overlap, a clock, safe localStorage,
+ *             the secret-unlock set, and a minimal object pool for the
+ *             no-allocation hot loops.
  *
  * Classic <script> file: no imports, no exports, no build step.
  * ========================================================================= */
@@ -196,15 +198,40 @@
     chocolate:     '#7a4a2c',
     chocolateLt:   '#a9714a',
     chocolateDark: '#3f2416',
-    chocolateChip: '#2a170d'
+    chocolateChip: '#2a170d',
+
+    /* --- THE SECRET TENTH CHARACTER  (SPEC-BURRITO.md sections 1 and 3) ----
+     * BURRITO is foil first and filling second, so his colours come in those
+     * two groups. The foil is the big area — it is what the eye reads at
+     * 44x34 — which is why all three of his variants move it as well as the
+     * filling: SPEC-VARIANTS.md section 6 requires every pair of variants to
+     * differ by a meaningful FRACTION of drawn pixels, and a burrito that
+     * changed only the inch of filling showing at the top would be three
+     * versions of one sprite.
+     *
+     * BREAKFAST and MISSION wear foil the game already owns (PAL.chrome and
+     * the wing whites), for the same reason the other nine were built out of
+     * the breakfast palette: ten characters still have to look like one set.
+     */
+    burritoFoil:   '#b3aca6',   // burrito row + CARNE ASADA — foil off the grill
+    burritoFoilLt: '#e4ded6',   // the bright crease down one side of it
+    burritoFoilDk: '#6e6660',   // its scorched creases and shadowed edge
+    foilBright:    '#dae4f0',   // MISSION's fresh, unburnt foil
+
+    carneAsada:    '#4e2c1e',   // CARNE ASADA filling — dark, charred
+    carneChar:     '#8a4a2c',   // its lit edge and char marks
+    eggYolk:       '#f7c948',   // BREAKFAST filling — pale egg yellow
+    salsaRed:      '#d42a2a',   // MISSION filling — salsa
+    salsaLite:     '#ff6b4a'    // its lit edge
   };
 
   /* -------------------------------------------------------------------------
    * BASE WEAPONS / PLAYABLE CHARACTERS   (SPEC-CHARACTERS.md §2 and §3)
    *
-   * Nine playable characters, each with its own BASE weapon. Every one of them
+   * Nine playable characters, each with its own BASE weapon, plus the secret
+   * tenth at the bottom of the table (SPEC-BURRITO.md §1). Every one of them
    * still obeys the classic ONE-LIVE-SHOT rule; the upgrade tokens from
-   * SPEC-WEAPONS.md override the base weapon identically for all nine.
+   * SPEC-WEAPONS.md override the base weapon identically for all ten.
    *
    * The balance rule this table exists to enforce: ONE advantage paired with
    * ONE drawback, and every advantage is CONDITIONAL. No character may be a
@@ -1071,12 +1098,106 @@
           shotOverlay: null,
           trailColor: PAL.chocolate, sfxDetune: -220 }
       ]
+    },
+
+    /* THE SECRET TENTH CHARACTER  (SPEC-BURRITO.md §1)
+     *
+     * BURRITO is not in the roster the player can see until wave 5 unlocks
+     * him — but he is an ordinary row HERE, because being a secret is a
+     * question of what the select screen offers, not of the data having a
+     * hole in it. Everything that walks T.C.CHARACTER_ORDER gates on
+     * T.Util.isUnlocked('burrito'); nothing gates on this row existing.
+     *
+     * His gun WRAPPED is the only one in the game that changes while you
+     * play: every shot fires the NEXT wid in T.C.BURRITO_CYCLE with that
+     * weapon's own stats and its own real mechanic — the rasher's burning
+     * trail, the croissant's velocity inheritance, the grinder's 3-pellet
+     * volley. weapons.js delegates to those three defs rather than copying
+     * them, so there is exactly one source of truth for each.
+     *
+     * WHICH MAKES THE FIVE NUMBERS BELOW A FALLBACK, NOT A WEAPON. speed, w,
+     * h, refire and dmg are what any code that asks this ROW directly gets:
+     * the select screen's SPEED/SPREAD/REACH bars, a harness reading the
+     * table, and the very first frame of a life, before a shot has ever been
+     * fired and the cycle has a weapon to answer with. They are the sizzle
+     * row's five numbers exactly — index 0 of the cycle, so the fallback is
+     * the truth about his first shot rather than a made-up tenth weapon —
+     * and they are deliberately not a fourth tunable: the balance dial for
+     * this character is T.C.BURRITO_REFIRE_MULT, one number, down in C.
+     */
+    burrito: {
+      id: 'burrito', char: 'BURRITO', blurb: 'FOIL-WRAPPED, FULLY LOADED',
+      weapon: 'WRAPPED', wid: 'wrapped', tagline: 'WHATEVER IS IN THERE',
+      color: PAL.burritoFoil, mech: 'cycle',
+      // The sizzle row's numbers, to the digit (bacon: 460 / 6x18 / 0.22 / 5).
+      // Cycle index 0 is 'sizzle', so this is the fallback AND his opening shot.
+      speed: 460, w: 6, h: 18, refire: 0.22, dmg: 5,
+      ship: 'burrito0', shipFire: 'burrito1', life: 'lifeBurrito',
+      shot: 'sizzle', sfx: 'fireSizzle',
+      advantage: 'THREE WEAPONS — TRAIL, CURVE AND SPREAD',
+      drawback:  'YOU DO NOT GET TO CHOOSE WHICH',
+      /* HIS PROJECTILES ARE BORROWED, AND A BORROWED SPRITE IS NOT HIS TO
+       * REPAINT. `shot` above is 'sizzle' — the bacon strip's rasher — and
+       * over a life he also fires 'flake' and 'pepperPellet', which belong to
+       * the croissant and the grinder. Variant sprites are cached per MAP and
+       * per INDEX ('sizzle~1'), not per character, so a `shotKey` of his own
+       * invention would not dress HIS shot: it would repaint MAPLE GLAZED
+       * bacon for the bacon strip, and the rasher is a shipped, measured,
+       * pixel-tested character.
+       *
+       * So each of his variants carries, verbatim, the shotKey the sizzle map
+       * already wears at that index — bacon.0's, bacon.1's, bacon.2's. The
+       * bytes rasterized are identical whichever character writes them last,
+       * so nothing can be recoloured by build order, and the rule generalises
+       * to the two maps he borrows but does not own: a weapon he has taken
+       * arrives in ITS OWN dress at his variant index. Fire BREAKFAST and the
+       * bacon comes out maple-glazed, the flake comes out ALMOND and the
+       * peppercorn comes out CHILLI, because those are variant 1 of the three
+       * weapons he is holding. His own identity is the burrito: the body, the
+       * life icon, the trail colour and the name.
+       */
+      variants: [
+        { id: 'burrito.0', name: 'CARNE ASADA', flavour: 'CHARRED. WRAPPED. FURIOUS.',
+          // The DEFAULT, so this key IS the burrito as sprites.js draws him:
+          // griddled tortilla, foil off the grill, dark filling.
+          key: { C: PAL.burritoFoil, L: PAL.burritoFoilLt, D: PAL.burritoFoilDk,
+                 R: PAL.cinnamon, b: PAL.cinnamonDust, d: PAL.crust,
+                 J: PAL.carneAsada, j: PAL.carneChar, K: PAL.burnt },
+          overlay: null,
+          shotKey: { J: PAL.jamRed, j: PAL.jamLite, b: PAL.crumb, K: PAL.burnt },
+          shotOverlay: null,
+          trailColor: PAL.burritoFoil, sfxDetune: 0 },
+        { id: 'burrito.1', name: 'BREAKFAST', flavour: 'IT IS SIX AM SOMEWHERE',
+          // Fresh foil off the roll, pale flour tortilla, egg with bacon in it.
+          key: { C: PAL.chrome, L: PAL.chromeLt, D: PAL.chromeDk,
+                 R: PAL.crust, b: PAL.crumb, d: PAL.crumbDark,
+                 J: PAL.eggYolk, j: PAL.baconPink, K: PAL.burnt },
+          overlay: null,
+          shotKey: { J: PAL.mapleAmber, j: PAL.mapleGloss, b: PAL.mapleFat,
+                     K: PAL.burnt },
+          shotOverlay: null,
+          trailColor: PAL.eggYolk, sfxDetune: 160 },
+        { id: 'burrito.2', name: 'MISSION', flavour: 'THE SIZE OF YOUR FOREARM',
+          key: { C: PAL.foilBright, L: PAL.wing, D: PAL.wingShade,
+                 R: PAL.crust, b: PAL.crumb, d: PAL.crumbDark,
+                 J: PAL.salsaRed, j: PAL.salsaLite, K: PAL.burnt },
+          overlay: null,
+          shotKey: { J: PAL.veggieRed, j: PAL.veggiePink, b: PAL.veggieCream,
+                     K: PAL.burnt },
+          shotOverlay: null,
+          trailColor: PAL.salsaRed, sfxDetune: -170 }
+      ]
     }
   };
 
-  /** Select-screen carousel order: the two baselines first, then the specials. */
+  /* Select-screen carousel order: the two baselines first, then the specials,
+   * and LAST the secret. Burrito is in the array unconditionally — the order
+   * is the whole roster, and hiding him is the SELECT SCREEN's job, done with
+   * T.Util.isUnlocked('burrito') (SPEC-BURRITO.md §2). A caller that walks
+   * this array without asking is walking ten characters, so every walker that
+   * a player can see the result of has to ask. */
   const CHARACTER_ORDER = ['bread', 'jam', 'croissant', 'mug', 'pepper',
-                           'honey', 'cheese', 'bacon', 'milk'];
+                           'honey', 'cheese', 'bacon', 'milk', 'burrito'];
 
   /* -------------------------------------------------------------------------
    * CONSTANTS
@@ -1283,6 +1404,102 @@
     MILK_W_MIN: MILK_W_MIN,
     MILK_W_MAX: MILK_W_MAX,
 
+    /* --- BURRITO, the secret tenth character  (SPEC-BURRITO.md §1) -------
+     * The cycle is DATA and in this order: every shot fires the NEXT wid in
+     * the list with that weapon's own stats and its own mechanic, and wraps.
+     * These are wids, not character ids — 'sizzle' is the bacon strip's
+     * rasher, 'flake' the croissant's shard, 'pepper' the grinder's volley —
+     * so weapons.js resolves each one through the roster row that already
+     * owns it instead of holding a second copy of three tuned weapons.
+     *
+     * Reordering or shortening this array is the SECOND balance lever, after
+     * the multiplier below. It changes the rhythm (the slow 3-pellet volley
+     * lands one shot in three) without touching a parent weapon.
+     */
+    BURRITO_CYCLE: ['sizzle', 'flake', 'pepper'],
+
+    /* THIS IS THE TUNING LEVER FOR BURRITO. THE ONLY ONE. It multiplies the
+     * refire of whichever weapon he has just fired, so one number moves his
+     * whole cycle: 1.0 is the three parent weapons at their own rhythm, 1.2
+     * is a fifth slower than the characters he borrows from.
+     *
+     * It exists so that bringing him into SPEC-CHARACTERS.md §5's +/-20% band
+     * NEVER means retuning sizzle, flake or pepper. Those three numbers are
+     * the bacon strip, the croissant and the pepper grinder — three shipped
+     * characters measured into the band across 720 seeded runs — and moving
+     * one to fix a fourth would quietly push its owner out. Tune THIS. If the
+     * multiplier alone cannot do it, the next lever is BURRITO_CYCLE's order
+     * or its length, above. Never the parent weapons.
+     *
+     * 1.20 IS MEASURED, NOT PICKED. At 1.0 the ten-character table is inside
+     * the +/-20% band — burrito clears wave 1 in 61.0s against a roster
+     * median of 63.5s, -3.9% — and the band is NOT what he fails. He fails
+     * the other assertion: at 1.0 he is a STRICT SUPERSET OF THE BACON STRIP,
+     * beating it on all four measured metrics at once (clear 61.03s to
+     * 61.13s, waves 0.834 to 0.833, shots per kill 1.128 to 1.213, accuracy
+     * 52.3% to 49.6%), which is precisely the "three weapons for free" the
+     * cycle is supposed to be paying for. He borrows the rasher whole, so
+     * beating its owner while also holding two other guns makes the bacon
+     * strip pointless.
+     *
+     * Swept at 360 seeds a character, ten characters, upgrade tokens off
+     * (scratchpad/character-balance-10.js, R-json-*.txt, seeds 1-360):
+     *
+     *     mult   burrito clear   dev from median   no-superset assertion
+     *     1.00       61.03s          -3.9%         FAIL  burrito >= bacon
+     *     1.05       61.18s          -3.7%         pass  (bacon by 0.2%)
+     *     1.10       61.87s          -2.6%         pass  (bacon by 1.17%)
+     *     1.15       62.31s          -1.9%         pass  (bacon by 1.88%)
+     *     1.20       62.60s          -1.5%         pass  (bacon by 2.32%)
+     *     1.25       61.94s          -2.5%         FAIL  burrito >= jam
+     *
+     * He is walled in on BOTH sides, which is why this is a corridor and not
+     * a floor. Too fast and he is the bacon strip with two extra guns. Too
+     * slow and he becomes a superset of the JAM JAR instead, from the other
+     * direction: a slower cycle means fewer, better-aimed shots, his accuracy
+     * climbs past the jam's, and he already beats it on everything else.
+     *
+     * AND THE DIAL IS NOT SMOOTH. A 0.02 nudge reshuffles which shots connect
+     * and moves the measured clear time by about a second — roughly four
+     * standard errors — in either direction, so the widest margin on any ONE
+     * seed set is mostly noise. 1.15 is chosen by WORST CASE over three
+     * independent 360-seed sets (1080 runs per candidate,
+     * scratchpad/R-minmargin.js), scoring the tightest daylight between
+     * burrito and any other character:
+     *
+     *     mult   seeds 1-360   361-720   721-1080   worst case
+     *     1.12      2.76%        1.38%     1.08%       1.08%
+     *     1.15      1.88%        2.24%     2.40%       1.88%   <- chosen
+     *     1.18      3.23%        2.34%     1.52%       1.52%
+     *     1.20      2.32%        0.85%     1.90%       0.85%
+     *
+     * 1.15 is the only candidate that never drops below 1.88% on any of the
+     * three, and it sits mid-corridor: below it the binding pair is always
+     * bacon, above it always the jam. That is the middle of the road, chosen
+     * on the worst of three measurements rather than the best of one.
+     */
+    BURRITO_REFIRE_MULT: 1.15,
+
+    /* --- the unlock itself  (SPEC-BURRITO.md §2 and §5) ------------------
+     * Three numbers game.js and ui.js were already reading through `||`
+     * fallbacks that restated them. A fallback is not a dial: two files
+     * agreeing on 2.5 by coincidence is exactly how a retune moves one clock
+     * and leaves the other animating the old one, so the values live HERE,
+     * once, and the fallbacks stay only as the "loaded without util.js"
+     * safety net they were meant to be.
+     *
+     * SECRET_CHARACTERS is the ids the select screen must keep back until
+     * T.Util.isUnlocked says otherwise, and it is a LIST for the same reason
+     * the storage slot is a JSON array: a second secret should be one more
+     * entry here and nothing else anywhere.
+     *
+     * BURRITO_UNLOCK_WAVE is the whole unlock condition (§2): reaching that
+     * wave, not clearing it, not surviving it.
+     */
+    SECRET_CHARACTERS: ['burrito'],
+    BURRITO_UNLOCK_WAVE: 5,
+    BURRITO_REVEAL_TIME: 2.5,
+
     // Select-screen SPEED / SPREAD / REACH bars (SPEC-CHARACTERS.md §4): the
     // value that fills a bar completely, so ui.js normalises against a tunable
     // instead of a magic number. REACH is the climb from the ship to the
@@ -1421,6 +1638,80 @@
   }
 
   /* -------------------------------------------------------------------------
+   * SECRET UNLOCKS   (SPEC-BURRITO.md §2)
+   *
+   * One set of unlocked ids, persisted as a JSON ARRAY under
+   * `toasterInvaders.unlocked` — an array rather than a boolean flag because
+   * the spec asks for room for more secrets later, and a second one must not
+   * mean a second storage key and a second set of semantics.
+   *
+   * Two rules the callers get for free by coming through here:
+   *
+   *   1. A DEVICE THAT CANNOT PERSIST STILL UNLOCKS. `unlocked` is held in
+   *      memory and storage is only a mirror of it, so private mode, a
+   *      file:// page with storage disabled and a full quota all behave the
+   *      same way: you unlock him, you play him, and next session he is
+   *      locked again. storeSet already swallows the throw; ignoring its
+   *      return value here is what turns that into "unlocked for the
+   *      session" instead of "unlocked nowhere".
+   *
+   *   2. UNLOCKING IS AN EVENT, AND IT HAPPENS ONCE. unlock() answers true
+   *      only on the call that actually changed the set, so the caller can
+   *      hang the reveal banner and the fanfare straight off it without
+   *      keeping a "have I shown this yet" flag of its own — and a player who
+   *      unlocked burrito three sessions ago reaches wave 5 again in silence.
+   *
+   * Storage is read ONCE, lazily, on the first question asked: isUnlocked()
+   * is called from the select screen's draw, which runs every frame, and a
+   * JSON.parse per frame is not free. Every write goes through unlock(), so
+   * the memory set and the store cannot disagree within one page.
+   * ---------------------------------------------------------------------- */
+  const UNLOCK_KEY = 'toasterInvaders.unlocked';
+  const unlocked = Object.create(null);
+  let unlockedLoaded = false;
+
+  /** Fold whatever is in storage into the in-memory set. Junk is ignored. */
+  function loadUnlocked() {
+    if (unlockedLoaded) return;
+    unlockedLoaded = true;
+    const stored = storeGet(UNLOCK_KEY, null);
+    if (!Array.isArray(stored)) return;      // never written, or written by junk
+    for (let i = 0; i < stored.length; i++) {
+      const id = stored[i];
+      if (typeof id === 'string' && id !== '') unlocked[id] = true;
+    }
+  }
+
+  /**
+   * Has this secret been unlocked, in this session or a previous one?
+   * @param {string} id  e.g. 'burrito'
+   * @returns {boolean}
+   */
+  function isUnlocked(id) {
+    if (typeof id !== 'string' || id === '') return false;
+    loadUnlocked();
+    return unlocked[id] === true;
+  }
+
+  /**
+   * Unlock a secret, and persist it if this device lets us.
+   * @param {string} id  e.g. 'burrito'
+   * @returns {boolean} true only if THIS call unlocked it — the caller's cue
+   *                    to play the reveal. false if it was already unlocked.
+   */
+  function unlock(id) {
+    if (typeof id !== 'string' || id === '') return false;
+    loadUnlocked();
+    if (unlocked[id] === true) return false;
+    unlocked[id] = true;
+    const ids = [];
+    for (const k in unlocked) ids.push(k);
+    ids.sort();                              // stable on disk between sessions
+    storeSet(UNLOCK_KEY, ids);               // false here just means no mirror
+    return true;
+  }
+
+  /* -------------------------------------------------------------------------
    * OBJECT POOL
    * Keeps the hot loops allocation-free: obtain() recycles a retired object
    * when one is available, release(o) retires it. `items` is the live set and
@@ -1475,6 +1766,8 @@
     now: now,
     storeGet: storeGet,
     storeSet: storeSet,
+    isUnlocked: isUnlocked,
+    unlock: unlock,
     Pool: Pool
   };
 

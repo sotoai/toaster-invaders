@@ -39,6 +39,19 @@
   const WAVE_Y_CAP         = C.BUNKER_Y - 200;   // §3: never start below this
   const INVASION_Y         = C.BUNKER_Y + 40;    // §3: toasters here = board over
 
+  /* --- the secret tenth character  (SPEC-BURRITO.md §2) -------------------
+   * The wave that reveals BURRITO, how long his reveal banner hangs about, and
+   * the two lines it says. The numbers are read from T.C when it carries them,
+   * so a harness sweeping the unlock never has to patch this file; the
+   * fallbacks are the two the spec states inline, and they sit here beside the
+   * other banner durations for the same reason those do — they tune
+   * presentation, and T.C has no slot for presentation timing. */
+  const SECRET_ID          = 'burrito';
+  const SECRET_WAVE        = C.BURRITO_UNLOCK_WAVE || 5;
+  const REVEAL_BANNER_TIME = C.BURRITO_REVEAL_TIME || 2.5;
+  const REVEAL_TITLE       = 'SECRET UNLOCKED';
+  const REVEAL_SUB_TAIL    = ' IS NOW ON THE SELECT SCREEN';
+
   const BUNKER_COUNT = 4;           // classic four shields
   const BUNKER_W     = 96;          // 'bunker' sprite size (§7)
   const BUNKER_H     = 64;
@@ -311,6 +324,20 @@
     if (ui && typeof ui[name] === 'function') ui[name](a, b, c, d, e);
   }
 
+  /**
+   * Put a ship back on the FIRST weapon of its rotating gun (SPEC-BURRITO §1).
+   *
+   * Only BURRITO has one, and weapons.js is the only file that knows where the
+   * position is kept — this file just says WHEN it starts over: a fresh ship at
+   * the start of a game, and a ship that has just died. Guarded like every
+   * other sibling call, because a weapons.js without the cycle is a game with
+   * nine characters, not a broken one.
+   */
+  function cycleReset(ship) {
+    const W = T.Weapons;
+    if (W && typeof W.cycleReset === 'function') W.cycleReset(ship);
+  }
+
   /* =========================================================================
    * THE CHARACTER ROSTER  (SPEC-CHARACTERS.md §2 and §6)
    *
@@ -381,17 +408,111 @@
     return isKind(kind) ? kind : KIND_DEFAULT;
   }
 
-  /** Carousel position of a kind (0 for anything off the roster). */
+  /* -------------------------------------------------------------------------
+   * SECRET CHARACTERS  (SPEC-BURRITO.md §2)
+   *
+   * BURRITO is a perfectly ordinary roster row in T.C.BASE_WEAPONS and the
+   * tenth id in T.C.CHARACTER_ORDER — being a secret is a question of what
+   * this screen OFFERS, not of the data having a hole in it. Until wave 5
+   * unlocks him he is ABSENT, not greyed out: he is not in the carousel, the
+   * carousel cannot browse onto him, and he is not counted in the "n OF n"
+   * the select screen prints. A player who has never reached wave 5 has no way
+   * to learn from the game that a tenth character exists.
+   *
+   * `visibleOrder` is that roster — the SAME array object for the life of the
+   * page, rebuilt in place — so ui.js may hold on to it, read it every frame
+   * and never allocate. It is rebuilt when the unlock state can have changed:
+   * at boot, on the way to the title, on the way into the select screen, and
+   * on the frame a secret actually unlocks.
+   *
+   * Only SELECTION is gated. Nothing in here can hide a character from a ship
+   * that is already flying: normalizeKind() still answers for every roster row
+   * (a burrito unlocked mid-session and taken into a game stays a burrito if
+   * storage refuses to persist him), and no rule, sprite, weapon or collision
+   * below asks whether a kind is secret.
+   * ---------------------------------------------------------------------- */
+
+  /* id -> the wave that reveals it. A map rather than a boolean because
+   * T.Util's storage is an ARRAY of unlocked ids for exactly the same reason:
+   * a second secret should be a row here and nothing else.
+   *
+   * WHICH IDS ARE SECRET comes from T.C.SECRET_CHARACTERS, the same list
+   * ui.js hides from the select screen. Two files each holding their own
+   * literal is how a second secret ends up hidden by one of them and unlocked
+   * by neither: this file decides WHEN a secret is earned, ui.js decides how
+   * it is kept back, and they have to be talking about the same ids. The
+   * fallback is the one id the spec names, for a build loaded without a T.C
+   * that carries the list. A secret that wants a different wave from
+   * SECRET_WAVE gets its own line under the loop. */
+  const SECRET_IDS = (Array.isArray(C.SECRET_CHARACTERS) && C.SECRET_CHARACTERS.length)
+    ? C.SECRET_CHARACTERS : [SECRET_ID];
+  const SECRET_WAVE_BY_KIND = Object.create(null);
+  for (let i = 0; i < SECRET_IDS.length; i++) {
+    const sid = SECRET_IDS[i];
+    if (typeof sid === 'string' && sid !== '') SECRET_WAVE_BY_KIND[sid] = SECRET_WAVE;
+  }
+
+  /** Is this character one the game keeps back until it is earned? */
+  function isSecretKind(kind) {
+    return typeof kind === 'string' && SECRET_WAVE_BY_KIND[kind] !== undefined;
+  }
+
+  /** Has this secret been earned — in this session or a previous one? */
+  function secretUnlocked(id) {
+    return !!(U.isUnlocked && U.isUnlocked(id));
+  }
+
+  /** True while this character must not appear anywhere a player can look. */
+  function isHiddenKind(kind) {
+    return isSecretKind(kind) && !secretUnlocked(kind);
+  }
+
+  /** True for a character this player is allowed to be pointed at. */
+  function isPickable(kind) {
+    return isKind(kind) && !isHiddenKind(kind);
+  }
+
+  /* The roster as the player is allowed to see it. Rebuilt IN PLACE. */
+  const visibleOrder = [];
+
+  function refreshVisibleOrder() {
+    visibleOrder.length = 0;
+    for (let i = 0; i < ROSTER_ORDER.length; i++) {
+      const kind = ROSTER_ORDER[i];
+      if (isHiddenKind(kind)) continue;
+      visibleOrder.push(kind);
+    }
+    // A carousel of nothing is not a screen anyone can leave: if every row of
+    // the table were somehow secret, the default character is still offered.
+    if (visibleOrder.length === 0) visibleOrder.push(KIND_DEFAULT);
+    return visibleOrder;
+  }
+
+  refreshVisibleOrder();
+
+  /** A kind guaranteed to name a character the player may currently choose. */
+  function normalizeVisibleKind(kind) {
+    const k = normalizeKind(kind);
+    return isHiddenKind(k) ? KIND_DEFAULT : k;
+  }
+
+  /** Carousel position of a kind, in the order the player can SEE. */
   function charIndex(kind) {
-    const i = ROSTER_ORDER.indexOf(kind);
+    const i = visibleOrder.indexOf(kind);
     return i < 0 ? 0 : i;
   }
 
-  /** The kind `steps` places along the carousel, wrapping both ways. */
+  /**
+   * The kind `steps` places along the carousel, wrapping both ways.
+   *
+   * It walks the VISIBLE order, which is what makes a locked secret
+   * unreachable rather than merely unlabelled: browsing left off `bread` lands
+   * on `milk` while burrito is locked, and on `burrito` once he is not.
+   */
   function cycleKind(kind, steps) {
-    const n = ROSTER_ORDER.length;
+    const n = visibleOrder.length;
     if (n === 0) return kind;
-    return ROSTER_ORDER[((charIndex(kind) + steps) % n + n) % n];
+    return visibleOrder[((charIndex(kind) + steps) % n + n) % n];
   }
 
   /* =========================================================================
@@ -830,6 +951,11 @@
       // weapon, resolved through the roster — nine kinds, nine base weapons,
       // and an upgrade token later reverts to exactly this one.
       T.Weapons.equip(ship, T.Weapons.baseFor(kind));
+      // SPEC-BURRITO §1: a rotating gun starts a NEW GAME at the head of its
+      // cycle. A ship object built here is fresh and carries no position, so
+      // this is belt and braces — and it is the belt that keeps a harness (or
+      // a future pool) that recycles ship objects honest.
+      cycleReset(ship);
       board.ships.push(ship);
     }
 
@@ -1706,6 +1832,11 @@
     // Reverting also drops any lance or beam the ship was holding up, so the
     // microwave hum stops on the same frame the ship burns.
     T.Weapons.revert(ship);
+    // SPEC-BURRITO §1: and the rotating gun goes back to the head of its
+    // cycle. Stated here rather than left to the revert above, because "resets
+    // on death" is a rule of THIS file's death flow: an upgrade running dry or
+    // a token being caught happens to a living ship and keeps its position.
+    cycleReset(ship);
     ship.lives = Math.max(0, ship.lives - 1);
 
     boom(board, ship.x + ship.w / 2, ship.y + ship.h / 2);
@@ -1846,6 +1977,12 @@
 
   function startNextWave(board) {
     board.wave += 1;
+    // SPEC-BURRITO §2: BEING IN WAVE 5 IS THE WHOLE CONDITION. This is the
+    // line the wave counter becomes 5 on, so the unlock is checked on the very
+    // next one — before the formation is rebuilt, before the banner, before
+    // the player has had a chance to die in it. Nothing else is required and
+    // nothing later can take it back: it is written to storage here.
+    checkSecretUnlock(board);
     board.bombs.length = 0;
     board.bombT = C.BOMB_COOLDOWN;
     board.bombType = 0;
@@ -1873,6 +2010,114 @@
     }
 
     enterBanner('WAVE ' + board.wave, '', WAVE_BANNER_TIME, true);
+  }
+
+  /* -------------------------------------------------------------------------
+   * THE SECRET UNLOCK  (SPEC-BURRITO.md §2)
+   *
+   * A board has reached a new wave. If that wave reveals a secret character,
+   * unlock it — ONCE, EVER — and queue the reveal.
+   *
+   * The condition is the wave number and nothing else. Not clearing it, not
+   * surviving it, not a score, not a mode, not a character, not both players:
+   * this runs on the frame the counter moves, from the ONE place it moves, so
+   * every route to wave 5 is covered by construction. In classic mode each
+   * player owns a board and its own wave counter, which is exactly what makes
+   * "either player reaching wave 5 counts" fall out for free.
+   *
+   * T.Util.unlock() persists AND answers true only on the call that changed
+   * the set, so this fires the banner and the fanfare exactly once per device
+   * and stays silent for a player who unlocked him three sessions ago. A
+   * device that cannot persist unlocks for the session; that is T.Util's
+   * promise and this file does not second-guess it.
+   * ---------------------------------------------------------------------- */
+  function checkSecretUnlock(board) {
+    if (!board || typeof U.unlock !== 'function') return;
+    for (const id in SECRET_WAVE_BY_KIND) {
+      if (board.wave < SECRET_WAVE_BY_KIND[id]) continue;
+      if (!U.unlock(id)) continue;         // already earned: no banner, no cue
+      refreshVisibleOrder();               // he exists to the select screen now
+      startReveal(id);
+    }
+  }
+
+  /**
+   * Queue the reveal banner for a character that has just been unlocked.
+   *
+   * game.js owns the STATE and the CLOCK; ui.js owns every pixel of it and
+   * reads `T.Game.reveal`, whose fields are the same shape as the wave banner
+   * and the weapon pickup banner it already draws:
+   *
+   *     id, kind      the character (a real T.C.BASE_WEAPONS row id)
+   *     title, text   'SECRET UNLOCKED'  (`text` is an alias, as Game.banner)
+   *     name          his display name, 'BURRITO'
+   *     sub           the line telling the player where to find him
+   *     weapon, blurb his HUD weapon name and roster blurb
+   *     color         his roster colour
+   *     sprite        his ship sprite
+   *     lifeIcon      his half-size life icon
+   *     t, duration, remaining   seconds elapsed / total / left
+   *     started       false until the banner is actually on screen
+   *
+   * The life icon is `lifeIcon` and NOT `life`, which is the obvious name for
+   * it: ui.js reads this object with a name-probe, and its duration probe asks
+   * for 'life' BEFORE 'duration' (a `life` of seconds-remaining is what most
+   * of the game's own timed objects call it). A `life` holding a SPRITE NAME
+   * therefore shadows the duration stated two lines below it, and ui.js falls
+   * back to its own 2.5s — silently identical today, and silently wrong the
+   * first time REVEAL_BANNER_TIME is tuned to anything else. One field, one
+   * meaning, and the clock this file owns is the clock ui.js draws.
+   *
+   * It is NOT drawn until `started`, and `started` does not become true until
+   * the game is back in 'play' — the counter moves under the "WAVE 5" banner,
+   * and a reveal that burned its 2.5s behind another banner would be a reveal
+   * the player never saw. The fanfare goes with the pixels for the same
+   * reason. From there it is pure presentation: it never pauses the game,
+   * never touches a board, and cannot obscure the formation for longer than
+   * its own duration because updateReveal only ever counts play time.
+   */
+  function startReveal(id) {
+    const row = charRow(id);
+    const name = (row && row.char) || id;
+    Game.reveal = {
+      id: id,
+      kind: id,
+      title: REVEAL_TITLE,
+      text: REVEAL_TITLE,
+      name: name,
+      sub: name + REVEAL_SUB_TAIL,
+      weapon: (row && row.weapon) || '',
+      blurb: (row && row.blurb) || '',
+      color: (row && row.color) || PAL.ui,
+      sprite: (row && row.ship) || null,
+      lifeIcon: (row && row.life) || null,
+      t: 0,
+      duration: REVEAL_BANNER_TIME,
+      remaining: REVEAL_BANNER_TIME,
+      started: false
+    };
+  }
+
+  /**
+   * The reveal banner's clock — play time only.
+   *
+   * Held back until the state is 'play' so the banner lands over the play
+   * field rather than behind the wave banner that fired it, and frozen again
+   * by a pause or a classic turn swap, so the 2.5s the player gets is 2.5s of
+   * the formation being covered and no more. It changes no board state and no
+   * ship state: a game that ignored T.Game.reveal entirely would play
+   * identically, frame for frame.
+   */
+  function updateReveal(dt) {
+    const r = Game.reveal;
+    if (!r || Game.state !== 'play') return;
+    if (!r.started) {
+      r.started = true;
+      sfx('unlockSecret');
+    }
+    r.t += dt;
+    r.remaining = Math.max(0, r.duration - r.t);
+    if (r.t >= r.duration) Game.reveal = null;
   }
 
   function updateBooms(board, dt) {
@@ -1914,7 +2159,14 @@
     Game.session = null;
     Game.board = null;
     Game.banner = null;
+    // A reveal belongs to the board it fired on; nothing carries over to the
+    // title screen but the unlock itself, which is already in storage.
+    Game.reveal = null;
     Game.quitConfirm = false;
+    // The attract loop and the select screen behind it must agree about who
+    // exists, and a player quitting straight out of the wave they unlocked him
+    // on is the one moment that can have changed since the last look.
+    refreshVisibleOrder();
     marchStop();
     sirenStop();
     // Hand every projectile in the pool back: no board owns them now, and any
@@ -1950,7 +2202,11 @@
    * that is not on the roster or a variant that character does not have.
    */
   function setPick(p, kind, variant) {
-    p.kind = normalizeKind(kind);
+    // normalizeVisibleKind, not normalizeKind: this is the one funnel every
+    // select-screen pick goes through, so it is the one place that has to be
+    // sure a player can never be pointed at a character that is still a secret
+    // (SPEC-BURRITO §2).
+    p.kind = normalizeVisibleKind(kind);
     p.index = charIndex(p.kind);
     p.variant = normalizeVariant(p.kind, variant);
     p.variantId = variantIdOf(p.kind, p.variant);
@@ -1977,21 +2233,28 @@
    * A remembered pick for this seat, falling back to its default character.
    *
    * This is the ONE place a character id arrives from outside the game, so it
-   * is the one place that has to distrust it: isKind() rather than a bare
-   * roster lookup, because a stored kind of "toString" or "constructor" would
-   * otherwise pass every guard in this file (see IS_KIND).
+   * is the one place that has to distrust it: isPickable() rather than a bare
+   * roster lookup, because
+   *   - a stored kind of "toString" or "constructor" would otherwise pass
+   *     every guard in this file (see IS_KIND), and
+   *   - a stored kind of "burrito" is a REAL roster row, so nothing else in
+   *     this file would refuse it — and a player who unlocked him on a device
+   *     that then cleared its storage, or who copied a save across, would be
+   *     handed a character the carousel is currently pretending does not
+   *     exist. That seat falls back to its default character instead
+   *     (SPEC-BURRITO §2).
    */
   function loadPick(slot, fallbackKind) {
     const raw = U.storeGet(PICK_KEYS[slot], null);
     let kind = fallbackKind;
     let variant = 0;
     if (raw && typeof raw === 'object') {
-      if (isKind(raw.kind)) kind = raw.kind;
+      if (isPickable(raw.kind)) kind = raw.kind;
       if (typeof raw.variant === 'number') variant = raw.variant;
-    } else if (isKind(raw)) {
+    } else if (isPickable(raw)) {
       kind = raw;                       // a save written before variants existed
     }
-    kind = normalizeKind(kind);
+    kind = normalizeVisibleKind(kind);
     return { kind: kind, variant: normalizeVariant(kind, variant) };
   }
 
@@ -2008,6 +2271,11 @@
   function enterSelect() {
     Game.state = 'select';
     Game.banner = null;
+    // SPEC-BURRITO §2: the carousel is rebuilt on the way in, so a secret
+    // unlocked in the game that just ended is on this screen the moment the
+    // player walks back onto it — and one that has not been earned is not on
+    // it at all, in any form, not even as a gap.
+    refreshVisibleOrder();
     // SPEC-CHARACTERS §4: the two panels are now windows onto a NINE-character
     // carousel. `kind` stays the source of truth (it is what ui.js and the
     // session read); `index` is its position in T.C.CHARACTER_ORDER, carried
@@ -2025,7 +2293,12 @@
     Game.select = {
       mode: 'coop',                   // §9: co-op is the default
       t: 0,
-      order: ROSTER_ORDER,            // the carousel, in roster order
+      /* The carousel, in roster order — and ONLY the characters this player
+       * has earned the right to see (SPEC-BURRITO §2). This is the array
+       * ui.js must browse and must COUNT: nine while burrito is locked, ten
+       * once he is not. It is the same array object for the life of the page,
+       * rebuilt in place, so reading it every frame allocates nothing. */
+      order: visibleOrder,
       players: players,
       // This file owns the select-screen bindings, so it NAMES them: ui.js
       // prints these strings verbatim wherever the screen tells a player which
@@ -2153,6 +2426,9 @@
     if (Game.session) Game.session.over = true;
     Game.state = 'over';
     Game.banner = null;
+    // Dying inside the reveal still unlocks him (that is written and done) —
+    // but his banner does not get to sit on top of the score card.
+    Game.reveal = null;
     marchStop();
     sirenStop();
     T.Weapons.releaseAllShots();     // nothing keeps humming over the score card
@@ -2558,6 +2834,11 @@
     board: null,
     select: null,
     banner: null,
+    /* The secret-reveal banner, or null (SPEC-BURRITO §2). Presentation only:
+     * ui.js draws it through renderSecretBanner, nothing else reads it, and
+     * the game plays identically whether it is there or not. See startReveal
+     * for the field list. */
+    reveal: null,
     quitConfirm: false,
     hiScore: 0,
     time: 0,
@@ -2569,7 +2850,11 @@
       this.session = null;
       this.board = null;
       this.banner = null;
+      this.reveal = null;
       this.quitConfirm = false;
+
+      // Ask storage once, at boot, who has already been earned.
+      refreshVisibleOrder();
 
       const stored = Number(U.storeGet(HI_KEY, 0));
       this.hiScore = (isFinite(stored) && stored > 0) ? Math.floor(stored) : 0;
@@ -2598,6 +2883,11 @@
         case 'over':   updateOver(dt);   break;
         default:       this.state = 'title'; break;
       }
+
+      // The reveal banner runs on its own clock, outside every board, so it
+      // can survive a wave banner and a classic turn swap without any of them
+      // having to know it exists (SPEC-BURRITO §2).
+      updateReveal(dt);
 
       // Persist the high score off the hot path, at most twice a second.
       if (hiDirty) {
@@ -2639,8 +2929,50 @@
           break;
       }
 
+      /* SPEC-BURRITO §2: the reveal, over the play field, for its 2.5s and no
+       * longer. Drawn after the board and the HUD so it reads as an overlay,
+       * and only once `started` — which updateReveal sets on the first PLAY
+       * frame, so it can never appear on the title, the select screen, behind
+       * the "WAVE 5" banner that fired it, or over the final score card.
+       *
+       * DRAWN ON EXACTLY THE STATE ITS CLOCK RUNS ON, and for the same reason
+       * the clock stops: 'play' is the only state where this band is over the
+       * play field and nothing else. updateReveal freezes it on a pause and on
+       * a classic turn swap — so a banner still drawn there would be a frozen
+       * 140px letterbox sitting across the middle of the screen with no way to
+       * time out. That is not hypothetical: the band spans y 382..522, and the
+       * pause panel's RESUME and QUIT lines (386, 420) and the quit-confirm's
+       * YES/NO row (402) are all inside it, so pressing START inside the 2.5s
+       * would cover the two prompts the player needs to read to get out. */
+      if (this.reveal && this.reveal.started && this.state === 'play') {
+        uiCall('renderSecretBanner', ctx, this);
+      }
+
       uiCall('renderScanlines', ctx);
     },
+
+    /**
+     * The characters a player is allowed to see RIGHT NOW, in carousel order
+     * (SPEC-BURRITO.md §2).
+     *
+     * THIS, not T.C.CHARACTER_ORDER, is what anything a player looks at must
+     * walk: the select carousel, the roster strip, the title attract loop, and
+     * every count printed on any of them ("n OF 9" until burrito is earned,
+     * "n OF 10" after). T.C.CHARACTER_ORDER is the DATA order and always holds
+     * all ten — a secret is absent from the game's offer, not from its table.
+     *
+     * The same array object every call, rebuilt in place when the unlock state
+     * can have changed, so a per-frame reader allocates nothing. Treat it as
+     * read-only.
+     */
+    visibleCharacters: function () { return visibleOrder; },
+
+    /**
+     * True when `id` names a roster character the player may currently see —
+     * always true for the nine, and true for a secret only once it has been
+     * earned, here or in an earlier session.
+     */
+    isCharacterUnlocked: function (id) { return isPickable(id); },
 
     /* Convenience hooks for main.js (visibilitychange auto-pause, etc). */
     pause: function () { enterPause(); },
