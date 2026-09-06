@@ -570,6 +570,18 @@
    *                         true exactly once, so a device that can persist
    *                         plays it once and never again.
    *
+   * And one from the shared-hearts addendum (SPEC-COOP section 4), on the
+   * same terms as playerDie above — a phrase under a banner, at the one
+   * moment in two-player co-op that costs the team anything:
+   *
+   *     heartLost  ~0.77s   the team spends a heart, under the down banner
+   *                         (T.C.COOP_DOWN_BANNER_TIME, 1.8s) and the revive
+   *                         that follows it
+   *
+   * Its sibling `revive` is NOT on this list and is not meant to be: it
+   * plays while the wave is live, so it is held to the blip budget and its
+   * last node stops 0.495s after t0.
+   *
    * Every one of the per-weapon FIRE sounds is a blip and stays well inside
    * 0.5s. fireEspresso is a special case in the other direction — its envelope
    * is over in 0.023s and its last node stops 0.047s after t0 (0.052s after the
@@ -1538,6 +1550,150 @@
       noise(g, {
         t0: reveal + 0.20, attack: 0.012, decay: 0.30, peak: 0.09,
         filter: { type: 'highpass', f0: 5600, q: 0.6 }
+      });
+    },
+
+    /* =====================================================================
+     * CO-OP SHARED HEARTS (SPEC-COOP.md section 4)
+     *
+     * Two cues for the two moments the mode invented. Both are gameplay
+     * events rather than score events, and neither may be mistaken for one:
+     * nothing in either of them is a ding, because in this game the bright
+     * metallic ding has meant TOAST IS READY — points — since enemyHit.
+     *
+     * Every number in both recipes is a literal, so nothing reaches an
+     * AudioParam that was not written down here. The only two values that
+     * can arrive from outside are the caller's `gain` and the variant
+     * `detune`, and play() has already run both through Number.isFinite and
+     * a clamp before either recipe is entered — neither cue adds a third
+     * route in.
+     * ================================================================== */
+
+    /* THE TEAM LOSES A HEART. Every player is down at once, one heart is
+     * spent, and both of them come back (SPEC-COOP.md section 2, rule 4).
+     * This is the ONLY moment in two-player co-op that actually costs the
+     * team something, so it is the heaviest cue in the game short of
+     * gameOver — and it has to be audibly heavier than playerDie, which by
+     * then has just played for one of the two ships and means something much
+     * smaller: one player is out until the wave turns over.
+     *
+     * HOW IT DIFFERS FROM playerDie, which is the cue it must not be
+     * confused with. That one is an INDIVIDUAL burning: it opens mid-register
+     * on a 330Hz square buzz and its loudest colour is a bright 3kHz sizzle,
+     * the sound of one slice going up. This one has no sizzle and almost no
+     * high content at all — everything is under a lowpass — and it opens an
+     * octave lower, on impact rather than on a buzz. Where playerDie SLIDES
+     * away as a single voice, this LANDS and then holds two voices a
+     * semitone apart: a dissonance, sustained, which is the team-sized
+     * version of the same bad news. Different register, different opening,
+     * different colour, and one voice against two.
+     *
+     * MIX. The sub settles onto D2 -> B1 (73-62Hz), deliberately BELOW the
+     * march's own G2-E2 (98-82Hz) rather than inside it, so the weight sits
+     * under the bass line instead of fighting it; the toll is an octave
+     * above the march and the impact is a transient that passes through it
+     * without dwelling. Measured off the scheduled envelopes (five voices,
+     * scratchpad/RVA-mix.js) the worst instant sums to 0.95 — heavier than
+     * playerDie's 0.87, which is the cue it has to outweigh, and still under
+     * unlockSecret's 1.03 and jackpot's 1.15. After MASTER_LEVEL that is
+     * 0.33 at the mix bus, comfortably under the limiter's -6dB (0.5)
+     * threshold, so it never has to duck the march to be heard.
+     *
+     * LENGTH 0.74s of envelope, 0.77s to its last node — long on exactly
+     * the same terms as playerDie's
+     * 0.62s: it plays under the down banner (T.C.COOP_DOWN_BANNER_TIME,
+     * 1.8s) and the revive spawn-in that follows it, so the phrase is over
+     * long before the players it revived can act on anything. */
+    heartLost: function (g, t0) {
+      // 1. THE FLOOR GOING OUT — one heavy fall, dark the whole way down.
+      tone(g, {
+        type: 'triangle', f0: 220, f1: 55, glide: 0.28,
+        t0: t0, attack: 0.004, sustain: 0.05, decay: 0.45, peak: 0.32,
+        filter: { type: 'lowpass', f0: 600, f1: 220, q: 0.8, glide: 0.30 }
+      });
+      noise(g, {                                  // the impact under it
+        t0: t0, attack: 0.002, decay: 0.16, peak: 0.18, rate: 0.45,
+        filter: { type: 'lowpass', f0: 420, f1: 180, q: 0.7, glide: 0.17 }
+      });
+
+      // 2. THE TOLL — G3 and F#3 struck together and held. A semitone is a
+      // clash by construction; holding it is what makes this a setback
+      // rather than a hit.
+      tone(g, {
+        type: 'triangle', f0: 196.00,
+        t0: t0 + 0.03, attack: 0.006, sustain: 0.16, decay: 0.52, peak: 0.24,
+        filter: { type: 'lowpass', f0: 1400, f1: 700, q: 0.7, glide: 0.55 }
+      });
+      tone(g, {
+        type: 'triangle', f0: 185.00, detune: -8,
+        t0: t0 + 0.03, attack: 0.006, sustain: 0.16, decay: 0.52, peak: 0.16,
+        filter: { type: 'lowpass', f0: 1300, f1: 650, q: 0.7, glide: 0.55 }
+      });
+
+      // 3. THE WEIGHT — a sub sinking below the march, so a shared heart
+      // costs more than one ship ever did.
+      tone(g, {
+        type: 'sine', f0: 73.42, f1: 61.74, glide: 0.50,
+        t0: t0 + 0.03, attack: 0.010, sustain: 0.20, decay: 0.50, peak: 0.20
+      });
+    },
+
+    /* A DOWNED PLAYER COMES BACK — either because their partner cleared the
+     * wave without them or because the team just spent a heart. Section 5 is
+     * blunt about why this cue exists: the failure mode of the whole feature
+     * is a player who cannot tell the game from a hang, so you must hear that
+     * you are back before you try to move.
+     *
+     * WARM, and warm is a specification here rather than a mood. The two
+     * happy cues it must not be mistaken for are both METAL and both mean
+     * points: extraLife is two bright dings on a bare octave leap, and
+     * tokenGrab is a swept pad under a seven-note climb across two octaves,
+     * capped by a double ding and a sparkle. So this one has NO ding, no
+     * sparkle, no climb and no metal in it anywhere. It is a breath opening
+     * up, one soft lift, and a plain major triad sounded TOGETHER on sines —
+     * the warmest, roundest voice in the file — and it arrives in a third of
+     * the notes either of them uses. Nobody will hear this and check their
+     * score.
+     *
+     * LENGTH 0.465s of envelope, 0.495s to its last node — deliberately
+     * inside the spec's own blip budget where playerDie and heartLost are
+     * not. Those two play under a banner with the board effectively on hold;
+     * this one plays while the wave is live and the player it is talking to
+     * is about to be shot at, so it says its piece and gets off the channel.
+     * It also finishes well inside T.C.COOP_REVIVE_TIME's spawn-in, which is
+     * the point: the sound and the picture agree that you are back. Its
+     * worst instant sums to 0.52, right beside extraLife's 0.53 — as present
+     * as the other good news in the game, and no louder. */
+    revive: function (g, t0) {
+      // 1. THE BREATH IN — a soft band of air opening upward. Quiet: this is
+      // the run-up, not the event.
+      noise(g, {
+        t0: t0, attack: 0.070, sustain: 0.03, decay: 0.13, peak: 0.075,
+        filter: { type: 'bandpass', f0: 500, f1: 2400, q: 0.8, glide: 0.19 }
+      });
+
+      // 2. THE LIFT — one warm fifth, F4 up to C5, gliding rather than
+      // stepping so it reads as coming back rather than as counting up.
+      tone(g, {
+        type: 'triangle', f0: 349.23, f1: 523.25, glide: 0.13,
+        t0: t0, attack: 0.020, sustain: 0.04, decay: 0.20, peak: 0.24,
+        filter: { type: 'lowpass', f0: 1800, f1: 2600, q: 0.7, glide: 0.14 }
+      });
+
+      // 3. THE LANDING — C major, sounded together on sines with a soft
+      // attack, so there is no strike transient at all. Peaks taper up the
+      // chord so three notes settle instead of stacking.
+      const chord = [523.25, 659.25, 783.99];
+      for (let i = 0; i < chord.length; i++) {
+        tone(g, {
+          type: 'sine', f0: chord[i],
+          t0: t0 + 0.14, attack: 0.025, sustain: 0.08, decay: 0.22,
+          peak: 0.16 - i * 0.035
+        });
+      }
+      tone(g, {                                   // body under the chord
+        type: 'sine', f0: 130.81,
+        t0: t0 + 0.14, attack: 0.020, sustain: 0.08, decay: 0.20, peak: 0.14
       });
     }
   };

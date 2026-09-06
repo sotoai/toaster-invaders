@@ -12,6 +12,7 @@
  *   T.Game.state           // 'title'|'select'|'play'|'pause'|'wave'|'over'
  *   T.Game.session         // current Session or null
  *   T.Game.uiTap(region)   // act on a tapped/clicked T.UI hit region
+ *   T.Game.isPlayerDown(n) // co-op: is player n sitting out this wave?
  *
  * This file NEVER draws text — all screen furniture goes through T.UI, which
  * loads after this file (that is fine: every reference is inside a function and
@@ -104,6 +105,23 @@
   const CHIP_EDGE  = 22;            // matches the HUD's own side margin
   const CHIP_Y     = C.PLAY_TOP + 4;   // just under the HUD strip
   const SYRUP_TINT = 0.45;          // how hard a syruped toaster is washed
+
+  /* --- co-op shared hearts (SPEC-COOP §5) --------------------------------
+   * The COPY the down/revive feedback is written in. Every duration behind it
+   * is a T.C constant (COOP_DOWN_BANNER_TIME, COOP_REVIVE_TIME,
+   * COOP_HEART_FLASH_TIME); these are the words, which T.C has no slot for and
+   * which live beside the other banner strings for the same reason those do.
+   *
+   * §5 is not decoration: the failure mode of this whole feature is a player
+   * who died, sees nothing happening, and concludes the game has hung or their
+   * pad has dropped. So every one of these says WHO, and WHAT THEY ARE WAITING
+   * FOR, in words rather than by implication. */
+  const DOWN_WAIT       = 'NEXT WAVE';              // the HUD side's "waiting for"
+  const DOWN_TITLE_TAIL = ' IS DOWN';
+  const DOWN_SAVE_TAIL  = ' CAN STILL SAVE THEM';
+  const DOWN_SUB        = 'CLEAR THE WAVE TO REVIVE THEM';
+  const HEART_TITLE     = 'HEART LOST';
+  const HEART_SUB       = 'BOTH PLAYERS BACK IN';
 
   /* Star layer tuning: [drift px/s, size, base alpha]. Layer 0 is deepest. */
   const STAR_LAYERS = [
@@ -858,8 +876,20 @@
    * character each player picked and, beside it, the cosmetic variant of that
    * character they picked. Both are carried onto the ship, and the variant is
    * carried NOWHERE else — it never reaches a number.
+   *
+   * `mode` is the session's, and with the slot count it decides the ONE thing
+   * SPEC-COOP.md changes: `sharedHearts`. See the co-op section below — a board
+   * with it false is the game exactly as it shipped, and every rule this file
+   * gained is gated on it.
    */
-  function createBoard(playerSlots, wave, kinds, variants) {
+  function createBoard(playerSlots, wave, kinds, variants, mode) {
+    /* SPEC-COOP §1: the shared-heart rules are CO-OP WITH TWO PLAYERS and
+     * nothing else. Co-op with one player keeps today's feel (a death costs a
+     * heart and you respawn) because with no partner to be saved by, a free
+     * death would make the game unloseable; classic's alternating turns are
+     * untouched, and build one single-slot board per player anyway. */
+    const shared = mode !== 'classic' && playerSlots.length > 1;
+
     const board = {
       slots: playerSlots.slice(),
       ships: [],
@@ -889,6 +919,30 @@
       // moves on (wave change, death, game over) — see clearTrail().
       baconTrail: [],
       baconTicker: null,
+
+      /* --- CO-OP SHARED HEARTS (SPEC-COOP §2 and §4) --------------------
+       * The team's pool, and everything a renderer needs to show it. See the
+       * CO-OP SHARED HEARTS section further down for the rules; these are the
+       * fields, and they are the contract T.UI reads:
+       *
+       *   sharedHearts  true ONLY on a two-player co-op board. Every co-op
+       *                 rule below is gated on it; false is today's game.
+       *   hearts        the pool. Shared by the team when sharedHearts, and
+       *                 this board's own single ship's lives when it is not,
+       *                 so §4's "in 1P co-op and in classic, hearts represent
+       *                 that board's own pool" is true without a second field.
+       *   heartsMax     how many sockets to draw: the starting pool, raised if
+       *                 EXTRA_LIFE_AT ever grows it (capped at C.HEARTS_MAX).
+       *   heartFlashT   seconds left of the "we just lost one" flash (§4).
+       *   downBanner    the short who-went-down / heart-lost banner, or null.
+       *   downNotice    the PERSISTENT marker while somebody is down, or null.
+       */
+      sharedHearts: shared,
+      hearts: shared ? C.HEARTS_COOP : C.LIVES,
+      heartsMax: shared ? C.HEARTS_COOP : C.LIVES,
+      heartFlashT: 0,
+      downBanner: null,
+      downNotice: null,
 
       wave: wave,
       dir: 1,
@@ -946,6 +1000,13 @@
       ship.fireT = 0;
       ship.extraGiven = false;      // EXTRA_LIFE_AT is awarded once per ship
       ship.pendingRespawn = false;  // classic: waiting for this player's turn
+      // SPEC-COOP §3: the fourth ship state. `down` is out of the wave but not
+      // out of the run — see the CO-OP SHARED HEARTS section. On a board that
+      // is not two-player co-op these three are set once here and never again.
+      ship.down = false;            // out of this wave, waiting to be revived
+      ship.downT = 0;               // seconds spent down (feedback only)
+      ship.downWaiting = '';        // what they are waiting for, in words
+      ship.reviveT = 0;             // seconds left of the revive spawn-in (§5)
       ship.fireHeld = false;        // §5: the attached weapons need the HOLD
       ship.fireBufferT = 0;         // remembered FIRE edge (see FIRE_BUFFER)
       // SPEC-CHARACTERS §6: the starting weapon is THIS character's base
@@ -972,6 +1033,7 @@
 
     buildFormation(board);
     restoreBunkers(board);
+    syncHearts(board);
     return board;
   }
 
@@ -1119,6 +1181,16 @@
     sirenStop();
   }
 
+  /** A player slot's accent colour — P1 mint, P2 pink, as the HUD paints them. */
+  function accentFor(slot) {
+    return slot === 1 ? PAL.p2 : PAL.p1;
+  }
+
+  /** 'PLAYER 1' / 'PLAYER 2', for anything that has to NAME a player. */
+  function playerName(ship) {
+    return 'PLAYER ' + ((ship && typeof ship.slot === 'number' ? ship.slot : 0) + 1);
+  }
+
   function anyShipAlive(board) {
     for (let i = 0; i < board.ships.length; i++) {
       const s = board.ships[i];
@@ -1156,11 +1228,30 @@
     // §3: one extra life per ship, the first time it crosses EXTRA_LIFE_AT.
     if (!ship.extraGiven && ship.score >= C.EXTRA_LIFE_AT) {
       ship.extraGiven = true;
-      ship.lives += 1;
+      /* SPEC-COOP §2 rule 7: on a shared board the award goes to the TEAM —
+       * one heart in the shared pool, capped at C.HEARTS_MAX so it cannot grow
+       * without limit. Still once per ship, exactly as it always was, which is
+       * why the cap and the pool line up: HEARTS_COOP (3) plus one award per
+       * player is HEARTS_MAX (5), and a duo can reach the ceiling but never
+       * pass it. `extraGiven` is set either way — the award happened, and a
+       * team already at the cap does not get to bank it for later. */
+      let granted = true;
+      if (board.sharedHearts) {
+        granted = board.hearts < C.HEARTS_MAX;
+        if (granted) {
+          board.hearts += 1;
+          syncHearts(board);
+        }
+      } else {
+        ship.lives += 1;
+        syncHearts(board);
+      }
+      if (!granted) return;
       sfx('extraLife');
       popup(board, x !== undefined ? x : ship.x + ship.w / 2,
-            y !== undefined ? y : ship.y - 20, '1UP',
-            ship.slot === 0 ? PAL.p1 : PAL.p2);
+            y !== undefined ? y : ship.y - 20,
+            board.sharedHearts ? '+1 HEART' : '1UP',
+            accentFor(ship.slot));
     }
   }
 
@@ -1182,6 +1273,20 @@
       const ship = board.ships[i];
       if (ship.out) continue;
 
+      /* SPEC-COOP §3: a DOWN ship takes no input that affects play. It reads
+       * no pad, moves nothing, fires nothing and holds nothing — the trigger
+       * is released every frame, so a button held at the moment its owner died
+       * (or a touch column that is still reporting a press) cannot come back
+       * as a stuck shot when they are revived. START and BACK are read above
+       * this loop, for the whole board, so a downed player can still pause and
+       * still quit. */
+      if (ship.down) {
+        ship.downT += dt;
+        ship.fireHeld = false;
+        ship.fireBufferT = 0;
+        continue;
+      }
+
       if (ship.dead) {
         ship.deathT += dt;
         if (ship.deathT >= C.SHIP_RESPAWN_DELAY) finishDeath(board, ship);
@@ -1189,6 +1294,7 @@
       }
       if (!ship.alive) continue;
 
+      if (ship.reviveT > 0) ship.reviveT = Math.max(0, ship.reviveT - dt);
       if (ship.spawnInvuln > 0) ship.spawnInvuln = Math.max(0, ship.spawnInvuln - dt);
       if (ship.fireT > 0) {
         ship.fireT -= dt;
@@ -1658,6 +1764,11 @@
 
     for (let i = 0; i < board.ships.length; i++) {
       const ship = board.ships[i];
+      // SPEC-COOP §3: a downed player catches NOTHING. (catchesToken refuses a
+      // ship that is not alive, and a down ship never is — this says it out
+      // loud in the pass that would otherwise hand them a weapon they cannot
+      // hold, and is one of the collision lists §3 asks to have audited.)
+      if (ship.down) continue;
       if (!T.Weapons.catchesToken(ship, token)) continue;
 
       token.alive = false;
@@ -1705,6 +1816,11 @@
       if (!b.alive) continue;
       for (let i = 0; i < board.ships.length; i++) {
         const ship = board.ships[i];
+        // SPEC-COOP §3: a DOWN ship is not on the field and cannot be hit. It
+        // is never `alive` either, so this list already refused it — the named
+        // test is here because a bomb killing a player who is not on screen is
+        // THE bug this feature has to not have.
+        if (ship.down) continue;
         if (!ship.alive || ship.dead || ship.out || ship.spawnInvuln > 0) continue;
         if (!T.Entities.aabb(b, ship)) continue;
 
@@ -1781,6 +1897,8 @@
     const list = board.enemies;
     for (let i = 0; i < board.ships.length; i++) {
       const ship = board.ships[i];
+      // SPEC-COOP §3: and a toaster cannot walk into one either.
+      if (ship.down) continue;
       if (!ship.alive || ship.dead || ship.out) continue;
       for (let k = 0; k < list.length; k++) {
         const e = list[k];
@@ -1805,14 +1923,326 @@
           ship.out = true;
           ship.alive = false;
           ship.dead = false;
+          // SPEC-COOP §2 rule 6: toasters on the bunker line end the board on
+          // the spot REGARDLESS OF HEARTS, exactly as they always have. A
+          // player who was down is out with everybody else — nobody is waiting
+          // to be revived any more.
+          ship.down = false;
+          ship.downWaiting = '';
+          ship.reviveT = 0;
           killShot(ship.shot);
         }
+        // The pool goes with them, for the same reason the loop above zeroes
+        // every player's lives rather than leaving them: the run is over, and
+        // a HUD still showing hearts in hand over a game-over card reads as a
+        // bug rather than as the rule it is.
+        board.hearts = 0;
+        syncHearts(board);
         burst(board, e.x + e.w / 2, e.y + e.h, fx('burnt'));
         sfx('playerDie');
         endBoard(board);
         return;
       }
     }
+  }
+
+  /* =========================================================================
+   * CO-OP SHARED HEARTS AND DOWNED PLAYERS  (SPEC-COOP.md §2 and §3)
+   *
+   * Crossy Castle's rule, in a Space Invaders board. On a TWO-PLAYER CO-OP
+   * board — and on no other board in the game — the team shares one pool of
+   * hearts and a death does not spend one:
+   *
+   *   1. Dying puts you DOWN. Nothing is decremented. You leave the play field
+   *      for the rest of the wave and keep your score, character, variant and
+   *      weapon while you are gone.
+   *   2. You come back when EITHER the next wave starts — your partner cleared
+   *      it without you, and your death cost the team nothing at all — OR your
+   *      partner goes down too.
+   *   3. A heart is spent ONLY at the moment every player is down at once, and
+   *      that same moment revives everybody, mid-wave, with the formation left
+   *      exactly where it marched to. Both going down in the same frame is one
+   *      heart, not two, because the heart is spent by the transition INTO
+   *      "everyone is down" and there is only ever one of those.
+   *   4. Spending the last heart is the game over.
+   *
+   * WHY THIS IS GATED ON `board.sharedHearts` AND NOT ON THE MODE. Co-op with
+   * ONE player must keep today's feel exactly — a death costs a life and you
+   * respawn — because with no partner to be saved by, a free death would make
+   * the game unloseable (SPEC-COOP §1). Classic is turn-based and each player
+   * already owns their own board and their own lives. So the flag is set once,
+   * at board creation, from the mode AND the slot count; every function below
+   * is a no-op without it, and every function this file already had takes the
+   * branch it always took.
+   *
+   * THE FOURTH SHIP STATE. A ship is now active / dying / down / out:
+   *
+   *   active   alive true,  dead false, down false, out false
+   *   dying    alive false, dead true,  down false, out false   (unchanged)
+   *   down     alive false, dead false, down TRUE,  out false   (new)
+   *   out      alive false, dead false, down false, out true
+   *
+   * `down` deliberately implies `alive === false`, which is what makes the
+   * audit §3 asks for hold by construction as well as by inspection: every
+   * collision list in this file already refuses a ship that is not alive.
+   * The explicit `down` tests added beside those are belt and braces, and they
+   * are there because "a down ship that can still be hit by a bomb" is the
+   * obvious bug in this feature and it should be impossible to reintroduce by
+   * touching one line.
+   * ====================================================================== */
+
+  /**
+   * Keep the heart pool and the ships' `lives` telling the same story.
+   *
+   * On a SHARED board the pool is the team's and a ship's own `lives` is
+   * meaningless on its own, so it mirrors the pool — anything that reads a
+   * ship's lives (the HUD's "is this player out?" test) then sees the number
+   * that actually decides the run, and no reader has to learn a second field.
+   * On every other board the ship's lives are the truth and `board.hearts`
+   * mirrors THEM, which is SPEC-COOP §4's "in 1P co-op and in classic, hearts
+   * represent that board's own pool".
+   */
+  function syncHearts(board) {
+    const ships = board.ships;
+    if (board.sharedHearts) {
+      for (let i = 0; i < ships.length; i++) ships[i].lives = board.hearts;
+    } else {
+      const ship = ships[0];
+      board.hearts = ship && typeof ship.lives === 'number'
+        ? Math.max(0, ship.lives) : 0;
+    }
+    if (board.hearts > board.heartsMax) board.heartsMax = board.hearts;
+  }
+
+  /** True once every player still in the run is down. False if nobody is in it. */
+  function everyoneDown(board) {
+    let any = false;
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (ship.out) continue;
+      any = true;
+      if (!ship.down) return false;
+    }
+    return any;
+  }
+
+  /** Somebody other than `ship` who is still in the run — the partner, or null. */
+  function partnerOf(board, ship) {
+    for (let i = 0; i < board.ships.length; i++) {
+      const other = board.ships[i];
+      if (other === ship || other.out) continue;
+      return other;
+    }
+    return null;
+  }
+
+  /**
+   * The short banner (SPEC-COOP §5): who went down and that their partner can
+   * still save them, or the heart the team just spent. T.UI owns every pixel
+   * of it and reads `board.downBanner`, whose shape matches the pickup banner
+   * and the wave banner it already draws:
+   *
+   *   type      'down' | 'heart'
+   *   slot      the player it is about, or -1 for a team-wide one
+   *   kind, variant, variantId, color   that player's identity, for a preview
+   *   title, text                       the headline ('text' is an alias)
+   *   sub                               the second line
+   *   t, duration, remaining            seconds elapsed / total / left
+   *
+   * One small object per event, which is a human-rate thing and not a hot loop.
+   */
+  function setCoopBanner(board, type, ship, title, sub) {
+    board.downBanner = {
+      type: type,
+      slot: ship ? ship.slot : -1,
+      kind: ship ? ship.kind : null,
+      variant: ship ? ship.variant : 0,
+      variantId: ship ? ship.variantId : '',
+      color: ship ? accentFor(ship.slot) : PAL.danger,
+      title: title,
+      text: title,
+      sub: sub,
+      t: 0,
+      duration: C.COOP_DOWN_BANNER_TIME,
+      remaining: C.COOP_DOWN_BANNER_TIME
+    };
+  }
+
+  /**
+   * The PERSISTENT down marker (SPEC-COOP §5), rebuilt only when the down set
+   * changes — never per frame.
+   *
+   * The banner above times out; this does not. It stays up for exactly as long
+   * as somebody is down, it is visible to BOTH players, and it says what the
+   * downed player is waiting for in words, because a player who died and sees
+   * nothing at all concludes the game has hung. T.UI reads `board.downNotice`:
+   *
+   *   slot, kind, variant, variantId, color   who is down
+   *   name     'PLAYER 2'
+   *   title    'PLAYER 2 IS DOWN'
+   *   sub      'CLEAR THE WAVE TO REVIVE THEM'
+   *   waiting  'NEXT WAVE'  — the same words their HUD side shows
+   *   text     the whole line, already joined
+   */
+  function refreshDownNotice(board) {
+    if (!board.sharedHearts) { board.downNotice = null; return; }
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (!ship.down) continue;
+      const current = board.downNotice;
+      if (current && current.slot === ship.slot) return;   // already saying it
+      const name = playerName(ship);
+      const title = name + DOWN_TITLE_TAIL;
+      board.downNotice = {
+        slot: ship.slot,
+        kind: ship.kind,
+        variant: ship.variant,
+        variantId: ship.variantId,
+        color: accentFor(ship.slot),
+        name: name,
+        title: title,
+        sub: DOWN_SUB,
+        waiting: DOWN_WAIT,
+        text: title + ' — ' + DOWN_SUB
+      };
+      return;
+    }
+    board.downNotice = null;
+  }
+
+  /**
+   * This player is DOWN: out of the wave, but not out of the run.
+   *
+   * Called from finishDeath on a shared board, in place of the respawn every
+   * other board does — so the death animation the player already knows plays
+   * out in full first, and only then does the ship leave the field.
+   *
+   * Everything that could still act for them is put down with them: the live
+   * shot, the fire buffer, the held trigger (so a button held at the moment
+   * they died cannot come back as a stuck press when they are revived), and
+   * their bacon embers. Their score, character, variant and weapon are the
+   * only things they keep, which is exactly what §3 asks for.
+   */
+  function goDown(board, ship) {
+    killShot(ship.shot);
+    ship.shot = null;
+    ship.down = true;
+    ship.downT = 0;
+    ship.downWaiting = DOWN_WAIT;
+    ship.alive = false;
+    ship.dead = false;
+    ship.deathT = 0;
+    ship.respawnT = 0;
+    ship.spawnInvuln = 0;
+    ship.reviveT = 0;
+    ship.frame = 0;
+    ship.fireT = 0;
+    ship.fireHeld = false;
+    ship.fireBufferT = 0;
+    ship.pendingRespawn = false;
+    clearTrail(board, ship);
+    refreshDownNotice(board);
+
+    // §2 rule 4 and rule 8: EVERYONE down is the one event that costs a heart,
+    // and it is one event however many players arrived at it on the same frame.
+    if (everyoneDown(board)) { spendHeart(board); return; }
+
+    const partner = partnerOf(board, ship);
+    setCoopBanner(board, 'down', ship, playerName(ship) + DOWN_TITLE_TAIL,
+                  partner ? playerName(partner) + DOWN_SAVE_TAIL : DOWN_SUB);
+    // Nobody left flying to shoot at: never let the bonus siren keep singing.
+    if (!anyShipAlive(board)) killUfo(board);
+  }
+
+  /**
+   * Put one downed player back on the line, mid-wave or at a wave start.
+   *
+   * The board is NOT touched: the formation stays exactly where it marched to,
+   * the bunkers keep their damage and the bombs keep falling. That is the
+   * point of §2 rule 4 — a heart buys the team its players back, not a reset.
+   *
+   * Audio is the caller's, so that two players revived by one heart make one
+   * cue rather than two.
+   */
+  function reviveShip(board, ship) {
+    ship.down = false;
+    ship.downT = 0;
+    ship.downWaiting = '';
+    ship.dead = false;
+    ship.deathT = 0;
+    ship.fireBufferT = 0;
+    // Back on the line the same way every other respawn is, so a revived ship
+    // is in exactly the state the rest of this file already expects.
+    respawnShip(board, ship);
+    /* §3 states the revival invulnerability as T.C.SHIP_RESPAWN_DELAY rather
+     * than the shorter window a plain respawn gets: you are being dropped into
+     * a wave already in progress, with the formation wherever it had marched
+     * to and bombs already in the air, which is a harsher place to arrive than
+     * the top of a wave. C.COOP_REVIVE_TIME's spawn-in is deliberately well
+     * inside it, so the materialise finishes while the ship is still
+     * untouchable instead of fading in right up to the moment it can die. */
+    ship.spawnInvuln = C.SHIP_RESPAWN_DELAY;
+    ship.reviveT = C.COOP_REVIVE_TIME;
+    /* §3: and you come back on your CHARACTER'S BASE WEAPON — the same rule
+     * that already says dying loses your upgrade (SPEC-WEAPONS §5), stated
+     * here so it is true of a revival on its own terms and not only because
+     * the death that preceded it happened to do it first. A rotating gun goes
+     * back to the head of its cycle with it (SPEC-BURRITO §1). */
+    T.Weapons.revert(ship);
+    cycleReset(ship);
+    burst(board, ship.x + ship.w / 2, ship.y + ship.h / 2, fx('chrome'));
+    rumble(ship.slot, 200, 0.25, 0.7);
+  }
+
+  /** Revive everyone who is down, with ONE cue. Returns how many came back. */
+  function reviveAllDown(board) {
+    let n = 0;
+    for (let i = 0; i < board.ships.length; i++) {
+      const ship = board.ships[i];
+      if (!ship.down) continue;
+      reviveShip(board, ship);
+      n++;
+    }
+    if (n > 0) sfx('revive');
+    refreshDownNotice(board);
+    return n;
+  }
+
+  /**
+   * Everyone is down at once — the ONE moment in this mode that costs the team
+   * something (SPEC-COOP §2 rule 4).
+   *
+   * Minus one heart, and the same instant hands both players back mid-wave.
+   * Spending the LAST heart is instead the end of the run: §2 rule 6, "game
+   * over when the team is on its last heart and everyone goes down together".
+   */
+  function spendHeart(board) {
+    board.hearts = Math.max(0, board.hearts - 1);
+    board.heartFlashT = C.COOP_HEART_FLASH_TIME;
+    syncHearts(board);
+    sfx('heartLost');
+    for (let i = 0; i < board.ships.length; i++) {
+      rumble(board.ships[i].slot, 420, 1, 0.7);
+    }
+
+    if (board.hearts <= 0) {
+      for (let i = 0; i < board.ships.length; i++) {
+        const ship = board.ships[i];
+        ship.down = false;
+        ship.downWaiting = '';
+        ship.reviveT = 0;
+        ship.alive = false;
+        ship.dead = false;
+        ship.out = true;
+        killShot(ship.shot);
+        ship.shot = null;
+      }
+      endBoard(board);          // takes the banner and the marker down with it
+      return;
+    }
+
+    reviveAllDown(board);
+    setCoopBanner(board, 'heart', null, HEART_TITLE, HEART_SUB);
   }
 
   /* -------------------------------------------------------------------------
@@ -1838,7 +2268,13 @@
     // on death" is a rule of THIS file's death flow: an upgrade running dry or
     // a token being caught happens to a living ship and keeps its position.
     cycleReset(ship);
-    ship.lives = Math.max(0, ship.lives - 1);
+    /* SPEC-COOP §2 rule 2: on a two-player co-op board a death COSTS NOTHING.
+     * It puts you down (finishDeath, once the animation has played out), and
+     * the team only pays if your partner goes down as well — so nothing is
+     * decremented here. Every other board spends a life exactly as it always
+     * has, which is what keeps 1P co-op and classic untouched. */
+    if (!board.sharedHearts) ship.lives = Math.max(0, ship.lives - 1);
+    syncHearts(board);
 
     boom(board, ship.x + ship.w / 2, ship.y + ship.h / 2);
     burst(board, ship.x + ship.w / 2, ship.y + ship.h / 2, fx('burnt'));
@@ -1868,6 +2304,12 @@
   function finishDeath(board, ship) {
     ship.dead = false;
     ship.deathT = 0;
+
+    /* SPEC-COOP §2 rules 2 and 3: a two-player co-op death ends here — the
+     * player goes DOWN for the rest of the wave instead of respawning, and
+     * comes back either when the next wave starts or when their partner goes
+     * down too. goDown owns both of those, including the heart. */
+    if (board.sharedHearts) { goDown(board, ship); return; }
 
     if (ship.lives > 0) {
       if (Game.session && Game.session.mode === 'classic') {
@@ -1904,6 +2346,11 @@
     // game over would otherwise leave its banner painted over the score card
     // for as long as that screen is up, so the board takes it down with it.
     board.pickup = null;
+    // Same for the co-op furniture (SPEC-COOP §5): nobody is waiting to be
+    // revived once the board is finished, and a "CLEAR THE WAVE TO REVIVE
+    // THEM" marker left painted over the score card is worse than none at all.
+    board.downBanner = null;
+    board.downNotice = null;
     marchStop();
   }
 
@@ -1998,10 +2445,29 @@
     buildFormation(board);
     restoreBunkers(board);
 
+    let revived = 0;
     for (let i = 0; i < board.ships.length; i++) {
       const ship = board.ships[i];
       if (ship.out) continue;
       ship.fireHeld = false;
+
+      /* SPEC-COOP §2 rules 3 and 5 — THE HEADLINE RULE. Your partner cleared
+       * the wave without you, so you are back and the team paid NOTHING. This
+       * is the whole point of the mechanic: a good partner makes your death
+       * free, and the heart count on either side of this line is the same.
+       *
+       * A ship still burning through its death animation as the wave turned
+       * over comes back with them. It was going to be put DOWN a frame or two
+       * later, and being down for the whole of a wave you were alive for when
+       * it started is exactly the "my game has hung" feeling §5 exists to
+       * prevent. On any other board a ship dying across a wave change keeps
+       * dying and respawns on its own clock, exactly as it always has. */
+      if (board.sharedHearts && (ship.down || ship.dead)) {
+        reviveShip(board, ship);
+        revived++;
+        continue;
+      }
+
       if (!ship.dead) {
         ship.alive = true;
         ship.spawnInvuln = SPAWN_INVULN;
@@ -2009,6 +2475,8 @@
         ship.y = C.SHIP_Y;
       }
     }
+    if (revived > 0) sfx('revive');
+    refreshDownNotice(board);
 
     enterBanner('WAVE ' + board.wave, '', WAVE_BANNER_TIME, true);
   }
@@ -2146,6 +2614,21 @@
       pick.t += dt;
       pick.remaining = Math.max(0, pick.duration - pick.t);
       if (pick.t >= pick.duration) board.pickup = null;
+    }
+
+    /* SPEC-COOP §4 and §5: the down / heart banner and the heart-row flash run
+     * on that same clock, for the same reason — they must keep running while
+     * the board is ending or the wave beat is playing out, and this is the one
+     * FX pass every branch of updatePlay calls. The PERSISTENT down marker is
+     * deliberately NOT on a clock: it stays up until its player is revived. */
+    const down = board.downBanner;
+    if (down) {
+      down.t += dt;
+      down.remaining = Math.max(0, down.duration - down.t);
+      if (down.t >= down.duration) board.downBanner = null;
+    }
+    if (board.heartFlashT > 0) {
+      board.heartFlashT = Math.max(0, board.heartFlashT - dt);
     }
   }
 
@@ -2418,10 +2901,10 @@
 
     if (mode === 'classic') {
       for (let i = 0; i < slots.length; i++) {
-        session.boards.push(createBoard([slots[i]], 1, kinds, variants));
+        session.boards.push(createBoard([slots[i]], 1, kinds, variants, mode));
       }
     } else {
-      session.boards.push(createBoard(slots, 1, kinds, variants));
+      session.boards.push(createBoard(slots, 1, kinds, variants, mode));
     }
 
     Game.session = session;
@@ -2455,6 +2938,12 @@
     if (Game.board) {
       dropAttached(Game.board);
       Game.board.pickup = null;
+      // The co-op down/heart banner is on the same clock and goes for the same
+      // reason: nothing ticks it while the board is frozen, so a half-played
+      // one would thaw out on top of the wave the player is trying to read.
+      // The persistent marker is untouched — a player who is still down is
+      // still down, and by here startNextWave has already brought them back.
+      Game.board.downBanner = null;
     }
     lastTempo = -1;
     if (waveSound) sfx('waveStart');
@@ -2817,6 +3306,10 @@
     for (let i = 0; i < board.ships.length; i++) {
       const ship = board.ships[i];
       if (ship.out && !ship.dead) continue;
+      // SPEC-COOP §3: a DOWN ship is not drawn in the play field at all. Its
+      // player is told where it went by the HUD and the marker (§5), not by a
+      // ghost parked on the line.
+      if (ship.down) continue;
 
       if (ship.dead) {
         // Charred toast, alternating between the two burn frames. Every
@@ -2827,9 +3320,24 @@
         continue;
       }
       if (!ship.alive) continue;
+      const frames = shipFrames(ship.kind, ship.variant);
+
+      /* SPEC-COOP §5: the revive SPAWN-IN. A player who has been sitting out a
+       * wave has to be able to SEE that they are back before they try to move,
+       * so a revived ship materialises over C.COOP_REVIVE_TIME instead of
+       * simply appearing mid-blink. It is over well inside the respawn shield,
+       * and the ordinary blink takes over for the rest of it — so the ship is
+       * plainly solid again while it is still untouchable. */
+      if (ship.reviveT > 0 && C.COOP_REVIVE_TIME > 0) {
+        const k = U.clamp(1 - ship.reviveT / C.COOP_REVIVE_TIME, 0, 1);
+        ctx.globalAlpha = 0.12 + k * 0.88;
+        blit(ctx, frames[ship.frame === 1 ? 1 : 0], ship.x, ship.y);
+        ctx.globalAlpha = 1;
+        continue;
+      }
+
       // Blink while the respawn shield is up.
       if (ship.spawnInvuln > 0 && (Math.floor(Game.time * 12) & 1) === 0) continue;
-      const frames = shipFrames(ship.kind, ship.variant);
       blit(ctx, frames[ship.frame === 1 ? 1 : 0], ship.x, ship.y);
     }
   }
@@ -2886,6 +3394,11 @@
   /**
    * The weapon HUD: a chip per player under their score, plus the centre pickup
    * banner. T.UI owns their look; this file only says which corner is whose.
+   *
+   * A DOWN player keeps their chip: they still own that weapon and will be
+   * holding it again when they come back, and a HUD side that empties out is
+   * one more thing that reads as "my game is broken" (SPEC-COOP §5). T.UI
+   * marks it down from `ship.down` / `ship.downWaiting`.
    */
   function renderWeaponHud(ctx, board) {
     for (let i = 0; i < board.ships.length; i++) {
@@ -2895,6 +3408,18 @@
       else uiCall('renderWeaponChip', ctx, ship, CHIP_EDGE, CHIP_Y, 'left');
     }
     if (board.pickup) uiCall('renderPickupBanner', ctx, board);
+
+    /* SPEC-COOP §5: the two pieces of down/revive feedback that sit over the
+     * PLAY FIELD rather than in the HUD strip. The shared heart row is not
+     * here — it belongs in the strip, and T.UI.renderHUD is already handed
+     * this same board and reads `hearts`, `heartsMax` and `heartFlashT` off
+     * it, so drawing it from here as well would draw it twice.
+     *
+     * Both are drawn only while there is something to say, and both are pure
+     * presentation: uiCall no-ops when T.UI does not define them, and a build
+     * that drew neither would play frame for frame identically. */
+    if (board.downNotice) uiCall('renderDownMarker', ctx, board);
+    if (board.downBanner) uiCall('renderDownBanner', ctx, board);
   }
 
   /* =========================================================================
@@ -3204,6 +3729,28 @@
      * read-only.
      */
     visibleCharacters: function () { return visibleOrder; },
+
+    /**
+     * Is this player currently DOWN — out of the wave, waiting to be revived
+     * (SPEC-COOP.md §3)?
+     *
+     * The one thing another file might want to ask about co-op that is not
+     * already hanging off the board it is handed: touch.js draws a control
+     * column per player and has no board, and a downed player's column must
+     * say so rather than look like a column that has stopped responding.
+     *
+     * Read-only, allocation-free, and false for every board that is not
+     * two-player co-op — so a caller may ask on any screen, in any mode.
+     */
+    isPlayerDown: function (slot) {
+      const board = this.board;
+      if (!board || !board.sharedHearts) return false;
+      const ships = board.ships;
+      for (let i = 0; i < ships.length; i++) {
+        if (ships[i].slot === slot) return !!ships[i].down;
+      }
+      return false;
+    },
 
     /**
      * True when `id` names a roster character the player may currently see —

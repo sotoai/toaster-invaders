@@ -281,6 +281,29 @@
     K: PAL.burnt           // face
   };
 
+  /* --- the shared co-op hearts (SPEC-COOP.md section 4) -------------------
+   * ONE key for both hearts, because they are two readings of one shape: a
+   * full heart and the empty socket it leaves behind, drawn on the same 9x8
+   * silhouette so a row of them is countable at a glance without reading each
+   * icon individually.
+   *
+   * Coloured like a HUD icon and not like a character. The heart is the
+   * TEAM's, not either player's, so it deliberately uses neither accent
+   * (PAL.p1 / PAL.p2) and none of the ten character palettes: it is jam —
+   * the game's own red — over the dark HUD strip, with the empty socket in
+   * PAL.uiDim, which is already the colour this HUD dims things to.
+   *
+   * No outline colour, on purpose. Both maps sit on the near-black HUD strip,
+   * where the established convention (see KEY_ICON) is a bright fill with
+   * darker detail rather than a dark outline that would simply disappear into
+   * the background. The full heart is its own silhouette; the empty one is a
+   * two-pixel dim line round the same silhouette with nothing inside it. */
+  const KEY_HEART = {
+    J: PAL.jamRed,    // the heart itself
+    j: PAL.jamLite,   // the specular on its left lobe, so it reads as glossy
+    D: PAL.uiDim      // the empty socket's dim outline
+  };
+
   // Bacon's trail ember: a coil spark going out.
   const KEY_EMBER = {
     O: PAL.coil,
@@ -413,6 +436,9 @@
 
     lifeBread: KEY_BREAD, lifeJam: KEY_JAM,
 
+    // The shared co-op heart and its empty socket (SPEC-COOP.md section 4).
+    heart: KEY_HEART, heartEmpty: KEY_HEART,
+
     bunker: KEY_BUNKER,
 
     // --- weapon upgrade system (SPEC-WEAPONS.md section 6) ----------------
@@ -499,6 +525,13 @@
     boomPlayer0: [44, 34], boomPlayer1: [44, 34],
 
     lifeBread: [22, 17], lifeJam: [22, 17],
+
+    /* The shared co-op hearts (SPEC-COOP.md section 4). 18x16, which is 9x8
+     * on the SCALE 2 grid — so unlike the 22x17 life icons beside them these
+     * need no SCALE_OVERRIDE, and must not have one: anything that CAN sit on
+     * the grid must, or it renders with half-size pixels next to art that
+     * does not. */
+    heart: [18, 16], heartEmpty: [18, 16],
 
     bunker: [96, 64],
 
@@ -1177,6 +1210,53 @@
       '..gJJJJJJJJJJJJJJJJg..',
       '..gggggggggggggggggg..',
       '......................'
+    ],
+
+    /* ---- THE SHARED CO-OP HEARTS (SPEC-COOP.md section 4) -----------------
+     * The team's hearts, drawn once as a full heart and once as the empty
+     * socket it leaves. 9x8 maps at SCALE 2, so both finish at 18x16.
+     *
+     * THE TWO MAPS ARE THE SAME SILHOUETTE, and that is the whole design
+     * brief: they sit in one centred row under the HI-SCORE and the player
+     * has to read "two of five" off it in a glance, mid-wave, without
+     * counting. Two shapes would make that a comparison; one shape filled or
+     * hollow makes it a pattern. Every cell that is drawn in `heart` is
+     * either drawn or outlined in `heartEmpty`, and no cell outside that
+     * silhouette is touched by either.
+     *
+     * heartEmpty's D pixels are exactly the EDGE of that silhouette — every
+     * cell with a neighbour outside it, and nothing else — so the socket is a
+     * hollow of precisely the shape the full heart fills.
+     *
+     * Heart legend:  J jam  j jam highlight  D dim socket outline
+     */
+
+    // FULL — solid jam with a specular high on the left lobe. No dark
+    // outline: it is drawn on the near-black HUD strip, where a bright fill
+    // IS the silhouette (the same reasoning as the weapon icons below).
+    heart: [
+      '.JJ...JJ.',
+      'JjjJ.JJJJ',
+      'JjJJJJJJJ',
+      'JJJJJJJJJ',
+      '.JJJJJJJ.',
+      '..JJJJJ..',
+      '...JJJ...',
+      '....J....'
+    ],
+
+    // EMPTY — the same heart as a two-pixel dim line with nothing inside it,
+    // so a spent heart still holds its place in the row and reads instantly
+    // as a socket rather than as a gap.
+    heartEmpty: [
+      '.DD...DD.',
+      'D..D.D..D',
+      'D...D...D',
+      'D.......D',
+      '.D.....D.',
+      '..D...D..',
+      '...D.D...',
+      '....D....'
     ],
 
     /* ---- BUNKER -----------------------------------------------------------

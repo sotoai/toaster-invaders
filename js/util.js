@@ -1509,6 +1509,80 @@
     LIVES: 3,
     EXTRA_LIFE_AT: 1500,
 
+    /* --- CO-OP SHARED HEARTS  (SPEC-COOP.md §2, §3, §4 and §5) -----------
+     * Crossy Castle's rule, in a Space Invaders board: a TWO-PLAYER CO-OP
+     * team shares one pool of hearts, and dying does not spend one. A death
+     * puts that player DOWN — out of play for the rest of the wave — and they
+     * come back either when the next wave starts (their partner cleared it
+     * without them, and the death cost the team nothing at all) or when their
+     * partner goes down too. Only that second event, EVERYONE down at once,
+     * spends a heart, and spending it revives both of them mid-wave with the
+     * formation left exactly where it marched to.
+     *
+     * SCOPE, because this is the part that is easy to get wrong: these
+     * numbers are read ONLY by co-op with two players. Co-op with ONE player
+     * keeps LIVES above and today's feel — a death costs a life and you
+     * respawn — because with no partner to be saved by, a free death would
+     * make the game unloseable. CLASSIC's alternating turns are untouched:
+     * each player already owns their own board and their own lives.
+     */
+
+    /* THE BALANCE DIAL FOR THE WHOLE FEATURE. One number, and the only one
+     * worth turning first.
+     *
+     * It is not comparable to LIVES by counting: a duo used to hold LIVES
+     * each — six deaths between them — and now holds three hearts for the
+     * team, which sounds far harsher and is not, because most deaths no
+     * longer cost a heart at all. The two changes pull hard in opposite
+     * directions and SPEC-COOP.md §6 is explicit that the net effect must be
+     * MEASURED with two scripted bots (mean waves survived, hearts left at
+     * wave 5, how often a death was free, how often both went down together)
+     * rather than argued from either half. 3 is the spec's stated default and
+     * the starting point for that measurement.
+     *
+     * Raise it if a duo cannot get out of the early waves; LOWER it if two
+     * competent bots turn out to be effectively unloseable — a co-op mode
+     * with no failure state is a finding to report, not a mode to ship. */
+    HEARTS_COOP: 3,
+
+    /* The ceiling on the shared pool. EXTRA_LIFE_AT adds a heart to the team
+     * (§2 rule 7) instead of a life to one player, so without a cap a duo
+     * scoring steadily would accumulate hearts faster than they could spend
+     * them and the run would stop being losable for the least interesting
+     * reason there is. 5 is the spec's default: two spare hearts over the
+     * starting pool is a real reward and still a countable HUD row. */
+    HEARTS_MAX: 5,
+
+    /* Seconds the "PLAYER n IS DOWN" banner holds (§5). The failure mode of
+     * this whole feature is a player who died, sees nothing happening, and
+     * concludes the game has hung or their pad has dropped — so the banner
+     * naming who went down and saying their partner can still save them is
+     * load-bearing, not decoration.
+     *
+     * 1.8s is between game.js's mid-play pickup banner (1.4s) and its
+     * turn-swap banner (1.5s) and the full-screen wave banner (2.0s): long
+     * enough to read two lines under fire, short enough that it is gone well
+     * before it can hide the formation from the player still alive. The
+     * PERSISTENT down marker §5 also asks for is not on this clock — it
+     * stays up for as long as the player is down. */
+    COOP_DOWN_BANNER_TIME: 1.8,
+
+    /* Seconds of visible spawn-in when a downed player is revived (§5). You
+     * must be able to see that you are back before you try to move.
+     *
+     * Deliberately well under SHIP_RESPAWN_DELAY: the revived ship carries
+     * that same 1.6s of respawn invulnerability (§3), so the materialise is
+     * finished and the ship is plainly solid again while it is still
+     * untouchable, rather than fading in right up to the moment it can be
+     * killed. */
+    COOP_REVIVE_TIME: 0.8,
+
+    /* Seconds the shared heart row flashes when the team spends a heart
+     * (§4, "losing a heart is a moment"). It fires alongside the heartLost
+     * cue, at the one instant in the mode that actually costs the team
+     * something, so it is short and emphatic rather than a lingering wash. */
+    COOP_HEART_FLASH_TIME: 0.5,
+
     // --- scoring ---------------------------------------------------------
     SCORE_ROW: [30, 20, 20, 10, 10],   // index = formation row, 0 = top
     UFO_SCORES: [50, 100, 150, 300],

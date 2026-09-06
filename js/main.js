@@ -619,6 +619,17 @@
       if (steps === MAX_STEPS_PER_FRAME && accumulator >= T.C.FIXED_DT) accumulator = 0;
 
       T.Game.render(ctx);
+
+      /* SPEC-COOP section 5: a downed player's control column has to say so
+       * while they are wondering whether the screen has stopped listening, not
+       * up to a quarter of a second later when touch.js's own 250ms watcher
+       * next runs. T.Touch.tick() is the hook that file publishes for exactly
+       * this — it re-derives the DOWN plates and runs its stuck-button
+       * reconcile — and it is edge-triggered, so on the overwhelming majority
+       * of frames (nobody down, no finger on the glass) it is two reads and a
+       * return. Guarded like every other call into T.Touch: a build without
+       * touch.js short-circuits here. */
+      if (T.Touch && typeof T.Touch.tick === 'function') T.Touch.tick();
     } catch (err) {
       stop();
       drawFatalError('CRASHED', err);

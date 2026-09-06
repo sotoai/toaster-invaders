@@ -4,6 +4,14 @@
  * ROLE: everything the player READS. Title, character select, HUD, wave
  * banner, pause, game over, the CRT overlay and the controller hint.
  *
+ * CO-OP: and, in two-player co-op only, the team's shared heart row and the
+ * three things that stop a downed player believing the game has hung — their
+ * own HUD side saying DOWN and what they are waiting for, a short banner
+ * naming who went down, and a persistent marker below the floor line that
+ * both players can see (SPEC-COOP.md §4 and §5). Every one of them is gated
+ * on `board.sharedHearts`, which game.js sets for a two-player co-op board and
+ * for nothing else, so 1P co-op and CLASSIC draw the HUD they always drew.
+ *
  * SECRETS: this file is also what keeps one. The tenth character is ordinary
  * data everywhere else in the game and ABSENT here until T.Util.isUnlocked
  * says otherwise — off the carousel, off the roster strip, out of the count —
@@ -3356,7 +3364,15 @@
     const dir = (align === 'right') ? -1 : 1;
     const col = info.color;
     const out = shipIsOut(ship);
-    const alpha = out ? 0.32 : 1;
+    /* SPEC-COOP §5: a DOWN player keeps their chip — they still own that
+     * weapon and will be holding it again when they come back, and a HUD side
+     * that empties out is one more thing that reads as "my game is broken".
+     * It is drawn benched rather than gone: dimmed, and with the glow off, so
+     * it plainly is not the weapon of a ship that is currently on the line.
+     * `down` is only ever true on a two-player co-op board, so every other
+     * board takes the branch it always took. */
+    const down = !out && shipIsDown(ship);
+    const alpha = out ? 0.32 : (down ? 0.42 : 1);
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -3384,7 +3400,7 @@
     const textX = x + dir * (iconW + CHIP.gap);
     drawText(ctx, info.name, textX, y + CHIP.nameDY, {
       size: CHIP.nameSize, color: col, align: dir > 0 ? 'left' : 'right',
-      shadow: true, glow: out ? 0 : 8, glowColor: col
+      shadow: true, glow: (out || down) ? 0 : 8, glowColor: col
     });
 
     const by = Math.round(y + CHIP.barDY - CHIP.barH / 2);
@@ -3479,6 +3495,11 @@
    * Draw remaining-life icons, growing right from x (dir +1) or left (-1).
    * The icons wear the ship's VARIANT palette (SPEC-VARIANTS.md §5), which in
    * co-op is the fastest way to tell whose lives you are looking at.
+   *
+   * On a SHARED-HEART board this is called with `lives` = 1 and draws exactly
+   * one icon: the team's count lives in the centre heart row, and what a
+   * player's own side of the HUD keeps is their character as an IDENTITY
+   * marker (SPEC-COOP §4). Nothing about the routine itself changes.
    */
   function drawLives(ctx, kind, lives, x, y, dir, alpha, vi) {
     const info = charInfo(kind);
@@ -3514,16 +3535,245 @@
     }
   }
 
-  /** One player's HUD block. */
-  function hudPlayer(ctx, sh, slot, side, active, t) {
+  /* -------------------------------------------------------------------------
+   * 7a. THE SHARED HEART ROW AND THE DOWNED PLAYER'S HUD SIDE
+   *      (SPEC-COOP.md §4, and the HUD half of §5)
+   *
+   * SCOPE FIRST, because it is the whole risk of this feature. Every branch
+   * below is gated on `board.sharedHearts` — a flag game.js sets ONCE, at board
+   * creation, and only for CO-OP WITH TWO PLAYERS. On a 1P co-op board and on
+   * either of classic's two boards it is false, `heartState` returns null, and
+   * this file draws the HUD it has always drawn, down to the pixel: the same
+   * three centre lines at the same y, and the same per-player row of character
+   * life icons fed from that ship's OWN `lives`.
+   *
+   * That last point is deliberate and it is not a dodge of §4's "in 1P co-op
+   * and in classic, hearts represent that board's own pool and render in the
+   * position the life icons use today". On those boards the pool IS that
+   * ship's lives — game.js's syncHearts mirrors one onto the other — so the
+   * icon row already renders that board's own pool, in the position it always
+   * has. Reading it out of `board.hearts` instead would be the same number
+   * everywhere except CLASSIC, where the HUD draws BOTH players from ships
+   * that live on two different boards and the live board's pool is only ever
+   * the player whose turn it is. So the ship's own lives is not merely the
+   * unchanged path, it is the only correct one there.
+   *
+   * On a shared board:
+   *   - the centre column becomes HI-SCORE / score / HEART ROW / WAVE n, so
+   *     the row sits centred BENEATH the hi-score and reads as the team's
+   *     rather than as either player's;
+   *   - each player's side keeps its score and its weapon chip (game.js draws
+   *     that one, just under the strip) and swaps its row of life icons for a
+   *     single one, as an identity marker;
+   *   - a DOWN player's side says so, in words, with what they are waiting
+   *     for — because §5's failure mode is a player who died, sees nothing,
+   *     and concludes the game has hung.
+   * ---------------------------------------------------------------------- */
+
+  const HEART = {
+    gap: 6,               // px between sockets
+    maxIcons: 8,          // sockets the row will draw before it counts in words
+    w: 18,                // fallback size if the sprites are not built yet
+    h: 16,
+
+    /* The shared centre column. It carries one more line than the stock one
+     * (the row itself), so all four are pulled up and tightened to stay inside
+     * the 96px strip: WAVE's baseline lands at 85, and at 11px its descender
+     * clears the 94px rule the strip is closed with. These numbers apply ONLY
+     * to a shared board — the stock column below is untouched. */
+    labelY: 14,
+    scoreY: 38,
+    rowY: 64,
+    waveY: 85,
+    labelSize: 11,
+    scoreSize: 21,
+    waveSize: 11,
+
+    /* "Losing a heart is a moment: flash the row" (§4). The flash is short and
+     * emphatic rather than a lingering wash — it rides game.js's own
+     * `heartFlashT`, which counts down from T.C.COOP_HEART_FLASH_TIME on the
+     * one frame in the mode that actually costs the team something. */
+    flashScale: 0.18,     // how much the row swells at the peak of the flash
+    flashWash: 0.42,      // alpha of the danger plate behind it
+    flashGlow: 20,        // shadowBlur on the socket that was just emptied
+    padX: 12,             // the plate's margin around the row
+    padY: 5
+  };
+
+  const HEART_FLASH_TIME = (typeof C.COOP_HEART_FLASH_TIME === 'number' &&
+                            C.COOP_HEART_FLASH_TIME > 0)
+    ? C.COOP_HEART_FLASH_TIME : 0.5;
+
+  /* The words a downed player's own side of the HUD prints, and how loudly.
+   *
+   * ONE line, on HUD.livesY — the row the life icons already own. It has to
+   * be one line: game.js draws that player's weapon chip immediately under
+   * the strip (C.PLAY_TOP + 4), whose name sits on baseline 92, and a second
+   * line under 78 would print straight through it. */
+  const DOWNHUD = {
+    pulseSpeed: 7.5,      // rad/sec on the DOWN label's alpha
+    pulseLo: 0.5,
+    labelGlow: 10,
+    iconAlpha: 0.30,      // their identity icon, plainly benched
+    gap: 8,               // px from that icon to the waiting block
+    wordGap: 6,           // px between the dim label and the bright words
+    labelSize: 9,
+    wordsSize: 11
+  };
+
+  const DOWN_WAIT_FALLBACK = 'NEXT WAVE';
+
+  /**
+   * True for a ship sitting out the wave: SPEC-COOP §3's fourth state.
+   *
+   * `down` implies `alive === false` and never overlaps `out` — a down player
+   * is still in the run — so the two tests below are read in that order
+   * everywhere: out wins, then down, then playing.
+   */
+  function shipIsDown(sh) {
+    return !!(sh && sh.down === true && sh.out !== true);
+  }
+
+  /** What that player is waiting for, in their own words if game.js said. */
+  function waitingWords(sh) {
+    const w = sh && sh.downWaiting;
+    return (typeof w === 'string' && w.length > 0) ? w : DOWN_WAIT_FALLBACK;
+  }
+
+  /** Width of one character's life icon, matching drawLives' own fallback. */
+  function lifeIconWidth(kind, vi) {
+    const s = sprite(variantSprite(charInfo(kind).life, vi));
+    return s ? s.w : 22;
+  }
+
+  /* Rewritten in place every frame, never reallocated (§12: no per-frame
+   * allocation in hot loops). Read it, do not keep it. */
+  const HEART_VIEW = { hearts: 0, max: 0, flash: 0 };
+
+  /**
+   * The team's shared pool, normalised — or null on every board that has no
+   * such thing, which is the switch the whole section hangs off.
+   *
+   *   hearts  full sockets
+   *   max     total sockets, so the empties keep their place as they are spent
+   *   flash   0..1 of the heart-lost flash, 0 for all but a few frames
+   */
+  function heartState(board) {
+    if (!board || board.sharedHearts !== true) return null;
+
+    let n = board.hearts;
+    if (typeof n !== 'number' || !isFinite(n) || n < 0) n = 0;
+    n = Math.floor(n);
+
+    let max = board.heartsMax;
+    if (typeof max !== 'number' || !isFinite(max) || max < 1) max = Math.max(1, n);
+    max = Math.floor(max);
+    if (n > max) max = n;
+
+    const raw = board.heartFlashT;
+    const flash = (typeof raw === 'number' && isFinite(raw) && raw > 0)
+      ? U.clamp(raw / HEART_FLASH_TIME, 0, 1) : 0;
+
+    HEART_VIEW.hearts = n;
+    HEART_VIEW.max = max;
+    HEART_VIEW.flash = flash;
+    return HEART_VIEW;
+  }
+
+  /**
+   * The row itself: full hearts, then empty sockets, so the total is legible
+   * at a glance and a spent heart leaves a hole rather than a shorter row.
+   *
+   * `cx, cy` is the row's centre. Everything is drawn around the origin under
+   * one translate so the flash can swell the whole row without moving it.
+   */
+  function drawHeartRow(ctx, cx, cy, st) {
+    const full = sprite('heart');
+    const empty = sprite('heartEmpty');
+    const w = full ? full.w : (empty ? empty.w : HEART.w);
+    const h = full ? full.h : (empty ? empty.h : HEART.h);
+
+    const n = Math.max(1, Math.min(st.max, HEART.maxIcons));
+    const lit = U.clamp(st.hearts, 0, n);
+    const total = n * w + (n - 1) * HEART.gap;
+    const k = st.flash;
+
+    ctx.save();
+
+    // The plate behind the row, only while it is flashing.
+    if (k > 0) {
+      ctx.globalAlpha = k * HEART.flashWash;
+      ctx.fillStyle = PAL.danger;
+      ctx.fillRect(Math.round(cx - total / 2 - HEART.padX),
+                   Math.round(cy - h / 2 - HEART.padY),
+                   Math.round(total + HEART.padX * 2),
+                   Math.round(h + HEART.padY * 2));
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.translate(Math.round(cx), Math.round(cy));
+    if (k > 0) {
+      const s = 1 + HEART.flashScale * k;
+      ctx.scale(s, s);
+    }
+
+    const x0 = -total / 2;
+    const y0 = Math.round(-h / 2);
+    for (let i = 0; i < n; i++) {
+      const x = Math.round(x0 + i * (w + HEART.gap));
+      const s = (i < lit) ? full : empty;
+
+      // The socket the team has JUST emptied is the one that flares: the flash
+      // says "a heart", not merely "something happened in the HUD".
+      const flare = k > 0 && i === lit && lit < n;
+      if (flare) {
+        ctx.shadowColor = PAL.danger;
+        ctx.shadowBlur = HEART.flashGlow * k;
+      }
+      if (s) {
+        ctx.drawImage(s.canvas, x, y0, s.w, s.h);
+      } else {
+        // Never let missing art leave the row blank — the count still has to
+        // be countable.
+        ctx.globalAlpha = (i < lit) ? 1 : 0.4;
+        ctx.fillStyle = (i < lit) ? PAL.jamRed : PAL.uiDim;
+        ctx.fillRect(x, y0, w, h);
+        ctx.globalAlpha = 1;
+      }
+      if (flare) ctx.shadowBlur = 0;
+    }
+
+    ctx.restore();
+
+    // A pool larger than the row can hold says the number in words instead of
+    // spilling sockets across the hi-score. T.C.HEARTS_MAX is 5 today, so this
+    // is a guard rail on the dial rather than a path the shipped game takes.
+    if (st.max > HEART.maxIcons) {
+      drawText(ctx, 'x' + st.hearts, cx + total / 2 + 8, cy, {
+        size: 11, color: PAL.uiDim, align: 'left'
+      });
+    }
+  }
+
+  /**
+   * One player's HUD block.
+   *
+   * `shared` is true only on a two-player co-op board, and it is the only
+   * thing in here that SPEC-COOP changes: the icon row becomes one identity
+   * icon plus, for a downed player, the state they are in and what will end
+   * it. Without it this is the routine exactly as it shipped.
+   */
+  function hudPlayer(ctx, sh, slot, side, active, t, shared) {
     const out = shipIsOut(sh);
-    const alpha = out ? 0.34 : 1;
+    const down = !out && shipIsDown(sh);
+    const alpha = out ? 0.34 : (down ? 0.62 : 1);
     const col = slotColor(slot);
     const align = side > 0 ? 'left' : 'right';
     const x = side > 0 ? HUD.edge : C.W - HUD.edge;
 
     let label = 'P' + (slot + 1);
     if (out) label += ' OUT';
+    else if (down) label += ' DOWN';
 
     // blinking marker on the player whose turn it is (classic mode)
     if (active && !out && (t % 0.8) < 0.45) {
@@ -3532,12 +3782,48 @@
     }
 
     drawText(ctx, label, x, HUD.labelY, {
-      size: 14, color: col, align: align, alpha: alpha, shadow: true
+      size: 14,
+      color: down ? PAL.danger : col,
+      align: align,
+      alpha: down ? pulse(t, DOWNHUD.pulseSpeed, DOWNHUD.pulseLo, 1) : alpha,
+      shadow: true,
+      glow: down ? DOWNHUD.labelGlow : 0, glowColor: PAL.danger
     });
     drawText(ctx, pad(sh && sh.score, 5), x, HUD.scoreY, {
       size: 24, color: PAL.ui, align: align, alpha: alpha,
-      glow: out ? 0 : 8, glowColor: col
+      // `down` is only ever true on a shared board, so this reads exactly as
+      // `out ? 0 : 8` everywhere the old HUD ran.
+      glow: (out || down) ? 0 : 8, glowColor: col
     });
+
+    if (shared) {
+      /* SPEC-COOP §4: the count is the team's and lives in the centre row, so
+       * what stays here is ONE icon — who this player is. Benched at
+       * DOWNHUD.iconAlpha while they are down, with the waiting block beside
+       * it reading "WAITING / NEXT WAVE" out of the ship's own downWaiting. */
+      const vi = shipVariant(sh);
+      drawLives(ctx, sh && sh.kind, 1, x, HUD.livesY, side,
+                down ? DOWNHUD.iconAlpha : alpha, vi);
+      if (down) {
+        // Measured as ONE block and then anchored, so the pair reads
+        // left-to-right on both sides of the screen and still hugs the
+        // player's own edge — the same arrangement the pause screen's
+        // CONTROL / BUTTONS row uses.
+        const words = waitingWords(sh);
+        const lw = textWidth(ctx, 'WAITING', { size: DOWNHUD.labelSize });
+        const ww = textWidth(ctx, words, { size: DOWNHUD.wordsSize, bold: true });
+        const anchor = x + side * (lifeIconWidth(sh && sh.kind, vi) + DOWNHUD.gap);
+        const bx = side > 0 ? anchor : anchor - (lw + DOWNHUD.wordGap + ww);
+        drawText(ctx, 'WAITING', bx, HUD.livesY, {
+          size: DOWNHUD.labelSize, color: PAL.uiDim, align: 'left'
+        });
+        drawText(ctx, words, bx + lw + DOWNHUD.wordGap, HUD.livesY, {
+          size: DOWNHUD.wordsSize, color: PAL.butter, align: 'left', bold: true,
+          glow: 8, glowColor: PAL.coil
+        });
+      }
+      return;
+    }
 
     const lives = sh && typeof sh.lives === 'number' ? Math.max(0, sh.lives) : 0;
     drawLives(ctx, sh && sh.kind, lives, x, HUD.livesY, side, alpha,
@@ -3580,29 +3866,458 @@
       else if (slot === 0) p1 = sh;
     }
 
-    if (p1) hudPlayer(ctx, p1, 0, 1, activeSlot === 0, t);
-    if (p2) hudPlayer(ctx, p2, 1, -1, activeSlot === 1, t);
+    // SPEC-COOP §4: null on every board but a two-player co-op one, and then
+    // every line below takes the branch it always took.
+    const hearts = heartState(b);
 
-    // centre column: HI-SCORE over WAVE n
+    if (p1) hudPlayer(ctx, p1, 0, 1, activeSlot === 0, t, hearts !== null);
+    if (p2) hudPlayer(ctx, p2, 1, -1, activeSlot === 1, t, hearts !== null);
+
+    // centre column: HI-SCORE over WAVE n — with the team's shared heart row
+    // between them in two-player co-op, centred so it reads as the TEAM's and
+    // not as either player's (SPEC-COOP §4).
     const cx = C.W / 2;
     let hi = highScore(g);
     for (let i = 0; i < ships.length; i++) {
       const sc = ships[i] && ships[i].score;
       if (typeof sc === 'number' && sc > hi) hi = sc;
     }
-
-    drawText(ctx, 'HI-SCORE', cx, 18, {
-      size: 12, color: PAL.uiDim, align: 'center'
-    });
-    drawText(ctx, pad(hi, 5), cx, 44, {
-      size: 22, color: PAL.butter, align: 'center', glow: 10, glowColor: PAL.coil
-    });
-
     const wave = (b && typeof b.wave === 'number') ? b.wave : 1;
-    drawText(ctx, 'WAVE ' + wave, cx, 74, {
-      size: 13, color: PAL.ui, align: 'center', alpha: 0.8
+
+    if (hearts) {
+      drawText(ctx, 'HI-SCORE', cx, HEART.labelY, {
+        size: HEART.labelSize, color: PAL.uiDim, align: 'center'
+      });
+      drawText(ctx, pad(hi, 5), cx, HEART.scoreY, {
+        size: HEART.scoreSize, color: PAL.butter, align: 'center',
+        glow: 10, glowColor: PAL.coil
+      });
+      drawHeartRow(ctx, cx, HEART.rowY, hearts);
+      drawText(ctx, 'WAVE ' + wave, cx, HEART.waveY, {
+        size: HEART.waveSize, color: PAL.ui, align: 'center', alpha: 0.8
+      });
+    } else {
+      drawText(ctx, 'HI-SCORE', cx, 18, {
+        size: 12, color: PAL.uiDim, align: 'center'
+      });
+      drawText(ctx, pad(hi, 5), cx, 44, {
+        size: 22, color: PAL.butter, align: 'center', glow: 10, glowColor: PAL.coil
+      });
+      drawText(ctx, 'WAVE ' + wave, cx, 74, {
+        size: 13, color: PAL.ui, align: 'center', alpha: 0.8
+      });
+    }
+
+    ctx.restore();
+  }
+
+  /* =========================================================================
+   * 7b. A DOWNED PLAYER MUST NOT FEEL BROKEN  (SPEC-COOP.md §5)
+   *
+   * The real risk of shared hearts is not a rule getting the arithmetic wrong.
+   * It is a player who dies, sees their ship leave the field, sees nothing
+   * happen for the next thirty seconds, and concludes the game has hung or
+   * their pad has dropped. Everything in this section exists to make that
+   * impossible, and none of it is decoration.
+   *
+   * Three pieces, on three different clocks:
+   *
+   *   the HUD side   permanent, section 7a. "P2 DOWN" and "WAITING NEXT WAVE"
+   *                  on that player's own corner of the strip.
+   *   the BANNER     1.8s, renderDownBanner. Who went down and that their
+   *                  partner can still save them — or, when the heart is
+   *                  spent, that both of them are back.
+   *   the MARKER     persistent, renderDownMarker. Up for exactly as long as
+   *                  somebody is down, visible to BOTH players.
+   *
+   * WHERE THEY ARE PUT, which is the constraint §5 states and the one that is
+   * easy to get wrong: "none of it may obscure the formation or the surviving
+   * player's ship for longer than its duration — the survivor is still playing
+   * and must be able to see."
+   *
+   *   The MARKER has no duration at all, so it is drawn where it can obscure
+   *   NOTHING: the 26px strip between the floor line (C.PLAY_BOTTOM) and the
+   *   bottom of the screen. No toaster, no bunker, no bomb and no ship ever
+   *   reaches it — a toaster that got that far ended the board two hundred
+   *   pixels ago. It can therefore sit there all wave without ever costing the
+   *   surviving player a pixel of the field.
+   *
+   *   The BANNER does have a duration, so it may use the middle of the screen,
+   *   and it uses the lane game.js already reasoned about for the pickup
+   *   banner — clear below a fresh formation's rows and clear above the
+   *   bunkers. If a pickup banner happens to own that lane already, this one
+   *   lifts clear of it rather than printing over its tagline.
+   *
+   * Both hooks are OPTIONAL to game.js: it calls them through a wrapper that
+   * no-ops when they are absent, and it calls them only on the frames there is
+   * something to say. Both read the board and keep nothing.
+   * ====================================================================== */
+
+  const DOWN_IS_DOWN = ' IS DOWN';
+  const DOWN_SUB_FALLBACK = 'CLEAR THE WAVE TO REVIVE THEM';
+
+  const DOWN_BANNER_TIME = (typeof C.COOP_DOWN_BANNER_TIME === 'number' &&
+                            C.COOP_DOWN_BANNER_TIME > 0)
+    ? C.COOP_DOWN_BANNER_TIME : 1.8;
+
+  /* The candidate field names every `probe` below reads, hoisted out of the
+   * functions that use them.
+   *
+   * §12 forbids allocating in a per-frame path, and these ARE per-frame paths:
+   * the marker is redrawn on every single frame somebody is down, which §5 is
+   * explicit can be a whole wave, and an array literal inside the function
+   * would be a fresh array on each of those frames. Written once here, they
+   * cost nothing and they read the same on frame one and frame ten thousand.
+   *
+   * PICKUP_FIELDS is shared with pickupState on purpose: renderDownBanner asks
+   * "is a pickup banner about to own my lane?" and it must be the SAME question
+   * pickupState answers, or the lift stops covering the frames it exists for. */
+  const PICKUP_FIELDS  = ['pickup', 'pickupBanner', 'weaponBanner', 'banner'];
+  const NOTICE_FIELDS  = ['downNotice', 'downMarker'];
+  const BANNER_FIELDS  = ['downBanner', 'coopBanner'];
+  const SLOT_FIELDS    = ['slot', 'player', 'playerSlot'];
+  const NAME_FIELDS    = ['name'];
+  const TITLE_FIELDS   = ['title', 'head'];
+  const HEAD_FIELDS    = ['title', 'text', 'head'];
+  const SUB_FIELDS     = ['sub', 'subtitle'];
+  const KIND_FIELDS    = ['kind', 'char', 'character'];
+  const VARIANT_FIELDS = ['variant', 'variantIndex', 'variantId', 'vi'];
+  const COLOR_FIELDS   = ['color'];
+  const DUR_FIELDS     = ['duration', 'life', 'total', 'max'];
+  const REMAIN_FIELDS  = ['remaining', 'remain', 'timer', 'ttl', 'left'];
+  const ELAPSED_FIELDS = ['t', 'elapsed', 'age'];
+
+  /* --- the persistent marker --------------------------------------------- */
+
+  const MARK = {
+    top: C.PLAY_BOTTOM + 4,                 // 694 — under the floor line
+    h: Math.max(18, C.H - (C.PLAY_BOTTOM + 4)),
+    titleSize: 12,
+    subSize: 10,
+    gap: 10,              // px either side of the separator
+    iconGap: 9,           // px from the character icon to the headline
+    padX: 16,             // the strip's margin around its contents
+    dot: 3,               // the separator: a square, because a dash glyph is
+                          //   the one thing a fallback monospace face may not
+                          //   have and a tofu box here would read as a fault
+    pulseHz: 2.6,         // slow. This is a status light, not an alarm.
+    lo: 0.72,
+    hi: 1.0
+  };
+
+  /* Rewritten in place; the marker is on screen every frame somebody is down,
+   * which makes this a hot path (§12). */
+  const NOTICE_VIEW = {
+    slot: 0, kind: null, variant: 0, color: '', title: '', sub: ''
+  };
+
+  /**
+   * Normalise game.js's `board.downNotice` into
+   *   { slot, kind, variant, color, title, sub }
+   * or null when nobody is down.
+   *
+   * `title` is preferred over `text` on purpose: game.js publishes both, and
+   * its `text` is the title and the sub already joined with an em dash — which
+   * is the one thing this file must not print, because it lays the two out
+   * itself at two different sizes.
+   */
+  function downNoticeState(board) {
+    const n = probe(board, NOTICE_FIELDS, null);
+    if (!n || typeof n !== 'object') return null;
+    if (n.active === false || n.alive === false) return null;
+
+    let slot = probe(n, SLOT_FIELDS, null);
+    if (typeof slot !== 'number' || slot < 0 || slot > 1) slot = 0;
+
+    let name = probe(n, NAME_FIELDS, null);
+    if (typeof name !== 'string' || name.length === 0) {
+      name = 'PLAYER ' + (slot + 1);
+    }
+
+    let title = probe(n, TITLE_FIELDS, null);
+    if (typeof title !== 'string' || title.length === 0) title = name + DOWN_IS_DOWN;
+
+    let sub = probe(n, SUB_FIELDS, null);
+    if (typeof sub !== 'string' || sub.length === 0) sub = DOWN_SUB_FALLBACK;
+
+    const kind = probe(n, KIND_FIELDS, null);
+    const entry = CHARS[kind] || null;
+    let vi = entry
+      ? variantIndexOf(entry, probe(n, VARIANT_FIELDS, null))
+      : 0;
+    if (vi === null) vi = 0;
+
+    let color = probe(n, COLOR_FIELDS, null);
+    if (typeof color !== 'string' || color.length === 0) color = slotColor(slot);
+
+    NOTICE_VIEW.slot = slot;
+    NOTICE_VIEW.kind = entry ? kind : null;
+    NOTICE_VIEW.variant = vi;
+    NOTICE_VIEW.color = color;
+    NOTICE_VIEW.title = title;
+    NOTICE_VIEW.sub = sub;
+    return NOTICE_VIEW;
+  }
+
+  /**
+   * `PLAYER 2 IS DOWN — CLEAR THE WAVE TO REVIVE THEM`, for as long as that is
+   * true (SPEC-COOP §5).
+   *
+   * A single centred strip below the floor line, in the downed player's accent
+   * with their character's icon on it, breathing slowly so it reads as live
+   * rather than as a frozen frame. It obscures nothing, so it can afford to
+   * stay; that is the entire reason it is down there.
+   */
+  function renderDownMarker(ctx, board) {
+    const st = downNoticeState(board);
+    if (!st) return;
+
+    const col = legible(st.color);
+    const icon = st.kind
+      ? sprite(variantSprite(charInfo(st.kind).life, st.variant))
+      : null;
+    const iw = icon ? icon.w : 0;
+    const lead = icon ? iw + MARK.iconGap : 0;
+
+    const titleW = textWidth(ctx, st.title, { size: MARK.titleSize, bold: true });
+    const subW = textWidth(ctx, st.sub, { size: MARK.subSize });
+    const total = lead + titleW + MARK.gap + MARK.dot + MARK.gap + subW;
+
+    const cy = Math.round(MARK.top + MARK.h / 2);
+    const x0 = Math.round((C.W - total) / 2);
+    const a = pulse(U.now(), MARK.pulseHz, MARK.lo, MARK.hi);
+
+    ctx.save();
+
+    // The strip: dark enough to read over the starfield, with a hairline in
+    // the downed player's colour along the top so whose it is reads instantly.
+    ctx.globalAlpha = a * 0.72;
+    ctx.fillStyle = '#06080e';
+    ctx.fillRect(x0 - MARK.padX, MARK.top, total + MARK.padX * 2, MARK.h);
+    ctx.globalAlpha = a * 0.85;
+    ctx.fillStyle = col;
+    ctx.fillRect(x0 - MARK.padX, MARK.top, total + MARK.padX * 2, 1);
+
+    ctx.globalAlpha = a;
+    let x = x0;
+    if (icon) {
+      ctx.drawImage(icon.canvas, x, Math.round(cy - icon.h / 2), icon.w, icon.h);
+      x += lead;
+    }
+
+    drawText(ctx, st.title, x, cy, {
+      size: MARK.titleSize, color: col, align: 'left', bold: true, shadow: true
+    });
+    x += titleW + MARK.gap;
+
+    ctx.fillStyle = PAL.uiDim;
+    ctx.fillRect(Math.round(x), Math.round(cy - MARK.dot / 2), MARK.dot, MARK.dot);
+    x += MARK.dot + MARK.gap;
+
+    drawText(ctx, st.sub, x, cy, {
+      size: MARK.subSize, color: PAL.crumb, align: 'left', shadow: true
     });
 
+    ctx.restore();
+  }
+
+  /* --- the short banner --------------------------------------------------- */
+
+  /* THE BANNER LANE, written down ONCE.
+   *
+   * This y was reasoned out for the weapon pickup banner — clear below a fresh
+   * formation's starting rows and clear above the bunkers — and it is the lane
+   * every centred mid-field banner in this file uses: PICKUP.cy, REVEAL.cy and
+   * DOWNB.cy below are all this constant.
+   *
+   * It has to be ONE constant rather than the same literal typed three times a
+   * few hundred lines apart, because DOWNB.lift is the only thing keeping the
+   * down banner from printing through the pickup banner and it is correct only
+   * while the two name the same lane. Moving one and not the others would not
+   * fail loudly — it would quietly put two headlines in one place.
+   */
+  const BANNER_CY = 452;
+
+  const DOWNB = {
+    cy: BANNER_CY,        // the lane game.js's pickup banner already uses
+    lift: 124,            // and where it goes when that lane is taken
+    bandH: 96,
+    open: 0.12,           // seconds the letterbox band takes to open
+    popIn: 0.26,          // seconds of the scale-in overshoot
+    fadeOut: 0.30,
+    titleSize: 34,
+    subSize: 15,
+    titleDY: -10,
+    subDY: 26,
+    iconScale: 2,
+    iconGap: 24
+  };
+
+  /* Rewritten in place, like every other per-frame view in this file. */
+  const BANNER_VIEW = {
+    type: 'down', title: '', sub: '', color: '', icon: null, t: 0, dur: 1
+  };
+
+  /**
+   * Normalise `board.downBanner` into
+   *   { type, title, sub, color, icon, t, dur }
+   * or null when there is no banner to draw.
+   *
+   * Same tolerance as pickupState: the banner may state its elapsed time or
+   * its remaining time, and either drives the animation. `type` is read from
+   * `type` alone and never from `kind` — on this banner `kind` is the
+   * CHARACTER, which is a different question with an overlapping name.
+   */
+  function downBannerState(board) {
+    const b = probe(board, BANNER_FIELDS, null);
+    if (!b || typeof b !== 'object') return null;
+    if (b.active === false || b.alive === false) return null;
+
+    let title = probe(b, HEAD_FIELDS, null);
+    if (typeof title !== 'string' || title.length === 0) return null;
+
+    let sub = probe(b, SUB_FIELDS, '');
+    if (typeof sub !== 'string') sub = '';
+
+    let dur = probe(b, DUR_FIELDS, null);
+    if (typeof dur !== 'number' || !isFinite(dur) || dur <= 0) dur = DOWN_BANNER_TIME;
+
+    let t;
+    const remain = probe(b, REMAIN_FIELDS, null);
+    if (typeof remain === 'number' && isFinite(remain)) {
+      if (remain <= 0) return null;
+      t = dur - remain;
+    } else {
+      const el = probe(b, ELAPSED_FIELDS, null);
+      t = (typeof el === 'number' && isFinite(el)) ? el : 0;
+    }
+    if (t >= dur) return null;
+    if (t < 0) t = 0;
+
+    const type = (b.type === 'heart') ? 'heart' : 'down';
+
+    /* What flanks the headline. A heart banner is about the pool, so it wears
+     * the socket the team just emptied; a down banner is about a person, so it
+     * wears that player's own character in that player's own variant. A kind
+     * this file does not have on its roster gets NO icon rather than the first
+     * character's — a banner naming P2 beside a slice of bread P2 is not
+     * flying would be worse than a banner with no picture on it. */
+    let icon = null;
+    if (type === 'heart') {
+      if (sprite('heartEmpty')) icon = 'heartEmpty';
+    } else {
+      const kind = probe(b, KIND_FIELDS, null);
+      const entry = CHARS[kind] || null;
+      if (entry) {
+        let vi = variantIndexOf(entry, probe(b, VARIANT_FIELDS, null));
+        if (vi === null) vi = 0;
+        const name = variantSprite(entry.life, vi);
+        if (sprite(name)) icon = name;
+      }
+    }
+
+    let color = probe(b, COLOR_FIELDS, null);
+    if (typeof color !== 'string' || color.length === 0) {
+      const slot = probe(b, SLOT_FIELDS, null);
+      color = (typeof slot === 'number' && slot >= 0 && slot <= 1)
+        ? slotColor(slot) : PAL.danger;
+    }
+
+    BANNER_VIEW.type = type;
+    BANNER_VIEW.title = title;
+    BANNER_VIEW.sub = sub;
+    BANNER_VIEW.color = color;
+    BANNER_VIEW.icon = icon;
+    BANNER_VIEW.t = t;
+    BANNER_VIEW.dur = dur;
+    return BANNER_VIEW;
+  }
+
+  /**
+   * The short who-went-down / heart-lost banner (SPEC-COOP §5).
+   *
+   * Built like the pickup banner it shares a lane with — a letterbox band that
+   * snaps open, a headline that pops in and swells as it fades — but quieter
+   * than that one, because this is a setback and not a prize: no rays, a
+   * smaller headline, and the whole thing gone in T.C.COOP_DOWN_BANNER_TIME.
+   *
+   * If a pickup banner already owns the lane, this one lifts DOWNB.lift clear
+   * of it. That can move the banner mid-animation, which is a fair price for
+   * never printing two headlines through each other, and it takes catching a
+   * weapon token in the same second a player went down to happen at all.
+   */
+  function renderDownBanner(ctx, board) {
+    const st = downBannerState(board);
+    if (!st) return;
+
+    const col = legible(st.color);
+    const e = st.t;
+    const left = st.dur - e;
+
+    let scale = 0.42 + 0.58 * easeOutBack(U.clamp(e / DOWNB.popIn, 0, 1));
+    let alpha = 1;
+    if (left < DOWNB.fadeOut) {
+      const k = U.clamp(left / DOWNB.fadeOut, 0, 1);
+      alpha = k;
+      scale *= 1 + 0.08 * (1 - k);
+    }
+
+    /* Is a pickup banner about to own this lane? Asked with the SAME field
+     * names pickupState reads, not with `board.pickup` alone — the lift exists
+     * to stop two headlines printing through each other, and a test that
+     * recognises fewer boards than the banner it is dodging would miss exactly
+     * the frames it is there for. `probe` hands back the object game.js
+     * already owns, so this costs no allocation. It errs toward lifting: a
+     * banner sitting 124px high for a pickup that turns out not to draw is a
+     * banner in the wrong place, and one printed through is unreadable. */
+    const pickupUp = !!probe(board, PICKUP_FIELDS, null);
+    const cy = pickupUp ? DOWNB.cy - DOWNB.lift : DOWNB.cy;
+    const bandH = Math.max(2, Math.round(DOWNB.bandH *
+                           U.clamp(e / DOWNB.open, 0, 1)));
+    const bandY = Math.round(cy - bandH / 2);
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Translucent, so the formation the survivor is still shooting at stays
+    // visible straight through it for the second and a half it is up.
+    ctx.fillStyle = 'rgba(6,8,14,0.74)';
+    ctx.fillRect(0, bandY, C.W, bandH);
+    ctx.fillStyle = col;
+    ctx.globalAlpha = alpha * 0.9;
+    ctx.fillRect(0, bandY, C.W, 2);
+    ctx.fillRect(0, bandY + bandH - 2, C.W, 2);
+    ctx.globalAlpha = alpha;
+
+    ctx.save();
+    ctx.translate(C.W / 2, cy);
+    ctx.scale(scale, scale);
+
+    drawText(ctx, st.title, 0, DOWNB.titleDY, {
+      size: DOWNB.titleSize, color: col, align: 'center', bold: true,
+      glow: 22, glowColor: col, shadow: true
+    });
+
+    if (st.icon) {
+      const half = textWidth(ctx, st.title,
+                             { size: DOWNB.titleSize, bold: true }) / 2;
+      blitCentered(ctx, st.icon, -half - DOWNB.iconGap, DOWNB.titleDY,
+                   DOWNB.iconScale);
+      blitCentered(ctx, st.icon, half + DOWNB.iconGap, DOWNB.titleDY,
+                   DOWNB.iconScale);
+    }
+
+    if (st.sub) {
+      // drawText's `alpha` REPLACES the context's, so the banner's own fade
+      // has to be folded in here or the second line would hang at 0.9 while
+      // everything around it faded out.
+      drawText(ctx, st.sub, 0, DOWNB.subDY, {
+        size: DOWNB.subSize, color: PAL.crumb, align: 'center',
+        alpha: alpha * 0.9, shadow: true
+      });
+    }
+
+    ctx.restore();
     ctx.restore();
   }
 
@@ -3616,9 +4331,11 @@
   const PICKUP = {
     time: 1.4,            // SPEC-WEAPONS §8; game.js may state its own on the
                           //   banner object, and that wins
-    cy: 452,              // clear below the formation's starting rows and
+    cy: BANNER_CY,        // clear below the formation's starting rows and
                           //   clear above the bunkers: a centred banner that
-                          //   does not sit on the toasters you are shooting
+                          //   does not sit on the toasters you are shooting.
+                          //   The down banner shares this lane and lifts off
+                          //   it when both are live, so it is ONE constant.
     bandH: 132,
     open: 0.12,           // seconds the letterbox band takes to open
     popIn: 0.28,          // seconds of the scale-in overshoot
@@ -3650,7 +4367,10 @@
    */
   function pickupState(board) {
     if (!board) return null;
-    const p = probe(board, ['pickup', 'pickupBanner', 'weaponBanner', 'banner'], null);
+    // PICKUP_FIELDS, not a literal: renderDownBanner reads the same list to
+    // decide whether to lift out of this banner's lane, and the two must be
+    // asking about the same set of boards.
+    const p = probe(board, PICKUP_FIELDS, null);
     if (!p || typeof p !== 'object') return null;
     if (p.active === false || p.alive === false) return null;
 
@@ -3910,7 +4630,7 @@
     time: (typeof C.BURRITO_REVEAL_TIME === 'number' &&
            isFinite(C.BURRITO_REVEAL_TIME) && C.BURRITO_REVEAL_TIME > 0)
             ? C.BURRITO_REVEAL_TIME : 2.5,
-    cy: 452,              // the pickup banner's band — the one clear stripe
+    cy: BANNER_CY,        // the pickup banner's band — the one clear stripe
     bandH: 140,           // 382 -> 522: clear of the bunkers and of the ship
     open: 0.14,           // seconds the letterbox band takes to open
     popIn: 0.30,          // seconds of the scale-in overshoot
@@ -4532,6 +5252,26 @@
     renderPickupBanner: renderPickupBanner,
     renderTokenLabel: renderTokenLabel,
     PICKUP_TIME: PICKUP.time,
+
+    /* --- co-op shared hearts and downed players (SPEC-COOP.md §4 and §5) --
+     * Two OPTIONAL hooks game.js calls over the play field, on the frames its
+     * board says there is something to say: the short who-went-down /
+     * heart-lost banner, and the persistent marker that stays up for exactly
+     * as long as somebody is down.
+     *
+     * The shared HEART ROW has no hook of its own on purpose — renderHUD is
+     * already handed the same board and reads `sharedHearts`, `hearts`,
+     * `heartsMax` and `heartFlashT` off it, so a second entry point would only
+     * be a way to draw the row twice.
+     *
+     * DOWN_BANNER_TIME is how long this file will animate a banner for when
+     * the board states no duration of its own, so the clock and the animation
+     * agree without being written down twice (PICKUP_TIME and UNLOCK_TIME are
+     * the same arrangement).
+     */
+    renderDownBanner: renderDownBanner,
+    renderDownMarker: renderDownMarker,
+    DOWN_BANNER_TIME: DOWN_BANNER_TIME,
 
     /* --- the secret tenth character (SPEC-BURRITO.md §2 and §5) ----------
      * renderSecretBanner draws the reveal game.js signals on T.Game.reveal;

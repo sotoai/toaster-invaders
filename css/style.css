@@ -1022,6 +1022,83 @@ kbd {
   letter-spacing: 0.16em;
 }
 
+/* ---------------------------------------------------------------------------
+ * A DOWNED PLAYER'S COLUMN  (SPEC-COOP.md section 5)
+ *
+ * "It must be obvious to the player who is down that they are not simply
+ * broken." On an iPad that is this column and nothing else: their ship has
+ * left the field, their thumb is still on FIRE, and the only thing that can
+ * tell them the screen is still listening is the glass under it.
+ *
+ * So the column says DOWN, and says what ends it, in the same words the HUD
+ * side and the persistent marker use — WAITING / NEXT WAVE. js/touch.js sets
+ * data-down="1" on the column box and unhides the plate; every rule here is
+ * keyed on that one attribute and nothing else in the file reads it.
+ *
+ * The buttons are DIMMED, not removed. js/touch.js deliberately leaves every
+ * control on the page for the whole of a down — a control that disappears
+ * from under a thumb is how this layer once stranded a press — and START and
+ * BACK have to keep working, because SPEC-COOP section 3 says a downed player
+ * can still pause and still quit. So the cluster fades to say "this does
+ * nothing right now" while the small strip above it stays at full strength,
+ * and pointer-events are untouched: a press still tracks, still paints, and
+ * still releases exactly as it does when they are alive.
+ * ------------------------------------------------------------------------ */
+.ti-touch__down {
+  order: -1;                 /* directly under the P1 / P2 tag, above START */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 4px;
+  border: 1px solid rgba(255, 91, 46, 0.55);
+  border-radius: 10px;
+  background: rgba(255, 91, 46, 0.10);
+  text-align: center;
+  animation: ti-down-breathe 1.6s ease-in-out infinite;
+}
+
+.ti-touch__down-label {
+  color: var(--coil);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.30em;
+  text-indent: 0.30em;       /* the tracking's trailing gap, taken back off */
+}
+
+.ti-touch__down-wait {
+  color: var(--ui);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-indent: 0.14em;
+  opacity: 0.85;
+}
+
+/* Slow, so it reads as a status light rather than as an alarm. */
+@keyframes ti-down-breathe {
+  0%, 100% { opacity: 0.78; }
+  50%      { opacity: 1; }
+}
+
+/* The controls this player cannot use right now. Dimmed, never disabled. */
+.ti-touch__col[data-down="1"] .ti-touch__cluster {
+  opacity: 0.34;
+}
+
+.ti-touch__col[data-down="1"]::before {
+  color: var(--coil);
+}
+
+/* Somebody who has asked for less motion gets the plate without the breath.
+   The colour and the words carry the meaning on their own. */
+@media (prefers-reduced-motion: reduce) {
+  .ti-touch__down {
+    animation: none;
+    opacity: 0.92;
+  }
+}
+
 /* The one button that exists only so a second player can get in. */
 .ti-touch__btn--join {
   flex-basis: 100%;

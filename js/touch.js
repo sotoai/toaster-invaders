@@ -273,6 +273,11 @@
   let modeBtn = null;         // the BUTTONS/DRAG toggle (label is dynamic)
   let gameModeBtn = null;     // the CO-OP/CLASSIC toggle (label is dynamic)
 
+  /* SPEC-COOP §5: the DOWN plate on a column, and whether it is currently up.
+   * Edge-triggered off T.Game.isPlayerDown(slot) — see refreshDown(). */
+  const downEls = [null, null];
+  const columnDown = [false, false];
+
   let touchCapable = false;   // §2: maxTouchPoints > 0, or a touchstart seen
   let visible = false;
   let keyboardSeen = false;   // stop drawing the tap prompts once a key lands
@@ -510,6 +515,38 @@
     cluster.appendChild(dpad);
 
     col.appendChild(cluster);
+
+    /* SPEC-COOP §5: THE DOWNED PLAYER'S COLUMN.
+     *
+     * The failure mode this exists for is a player on an iPad whose ship has
+     * left the field, who presses FIRE, sees nothing happen, and concludes the
+     * screen has stopped listening. So the column says outright that they are
+     * down and what will bring them back — the same words their HUD side and
+     * the persistent marker use, because three different phrasings for one
+     * state is its own kind of broken.
+     *
+     * The buttons themselves are NOT hidden, disabled or degated. That is a
+     * deliberate safety property and not laziness: a control that vanishes
+     * from under a thumb is exactly how this layer once stranded a press, and
+     * the only reason it cannot do so today is that dropControlHolders()
+     * releases by identity when one leaves the layout. Leaving every button on
+     * the page for the whole of a down means there is no such transition to
+     * get wrong — nothing to strand, nothing to re-acquire — and START and
+     * BACK keep working, which SPEC-COOP §3 requires of a downed player. The
+     * pad they drive is ignored for a down ship by game.js, which clears
+     * fireHeld and the fire buffer every frame it is down, so a trigger held
+     * through a death cannot come back as a shot on revival. */
+    const downPlate = el('div', 'ti-touch__down');
+    downPlate.setAttribute('aria-live', 'polite');
+    const downLabel = el('span', 'ti-touch__down-label');
+    downLabel.textContent = 'DOWN';
+    const downWait = el('span', 'ti-touch__down-wait');
+    downWait.textContent = 'NEXT WAVE';
+    downPlate.appendChild(downLabel);
+    downPlate.appendChild(downWait);
+    downPlate.hidden = true;
+    downEls[column] = downPlate;
+    col.appendChild(downPlate);
 
     const meta = el('div', 'ti-touch__meta');
     const start = makeButton('start', 'START', 'Start and pause');
@@ -1481,6 +1518,59 @@
     return c.name === 'left' || c.name === 'right' || c.name === 'fire';
   }
 
+  /** Is the player this column belongs to sitting out the wave (SPEC-COOP §3)? */
+  function playerIsDown(slot) {
+    try {
+      const g = T.Game;
+      if (!g || typeof g.isPlayerDown !== 'function') return false;
+      return g.isPlayerDown(slot) === true;
+    } catch (err) {
+      // A game that cannot be asked is a game with nobody down. Never let a
+      // read of somebody else's state take this layer down.
+      return false;
+    }
+  }
+
+  /**
+   * Put each column into, or out of, its DOWN state (SPEC-COOP §5).
+   *
+   * Edge-triggered: the DOM is touched only on the frames the answer actually
+   * changes, so the ordinary case — nobody down, in any mode, on any screen —
+   * costs two function calls and nothing else. `T.Game.isPlayerDown` is false
+   * for every board that is not two-player co-op, which is what keeps this
+   * inert in 1P, in classic and on every menu.
+   *
+   * SOLO hands both columns to P1, so a column's player is its own only in
+   * DUO — which is the only layout a two-player co-op board can produce
+   * anyway. Written from `layoutMode` rather than assumed, because a layout
+   * this file inferred wrongly must not put "DOWN" over a live player.
+   *
+   * `data-down` is SET to "0" rather than removed: the DOM shim the touch
+   * regression suite runs against has no removeAttribute, and a stylesheet
+   * keyed on ="1" does not need one.
+   */
+  function refreshDown() {
+    for (let col = 0; col < 2; col++) {
+      const slot = (layoutMode === LAYOUT_DUO) ? col : 0;
+      const down = !!(visible && !portrait && playerIsDown(slot));
+      if (down === columnDown[col]) continue;
+      columnDown[col] = down;
+
+      const box = columnEls[col];
+      if (box && typeof box.setAttribute === 'function') {
+        box.setAttribute('data-down', down ? '1' : '0');
+      }
+      const plate = downEls[col];
+      if (plate) plate.hidden = !down;
+
+      // The plate is a real box in the column's flex stack, so the content is
+      // a different height than it was: the fit pass has to see it, and any
+      // rect cached from before it appeared is stale.
+      markRectsDirty();
+      markLiftDirty();
+    }
+  }
+
   /** Push layout + mode + gates onto the DOM. Cheap; called by the watcher. */
   function applyControls() {
     for (let i = 0; i < controls.length; i++) {
@@ -1515,6 +1605,10 @@
       gameModeBtn.el._tiLabel.textContent =
         (g && g.mode === 'classic') ? 'CO-OP' : 'CLASSIC';
     }
+    /* SPEC-COOP §5: before the lift is measured, because the DOWN plate is
+     * part of the column's content and appearing changes its height. */
+    refreshDown();
+
     /* A control coming or going changes how tall the column's content is, so
      * the lift is re-measured HERE, after the DOM is settled and before
      * anything reads a rect off it (SPEC-TOUCHUI §7). No-ops unless something
@@ -2560,6 +2654,10 @@
         c.el.hidden = true;
         c.rect = null;
       }
+      // ...and nobody is down on a layer that is not on screen. This path does
+      // not run applyControls(), so the DOWN plate is taken down here or it
+      // would still be up under the next player who turns the controls on.
+      refreshDown();
     }
     if (rootEl) rootEl.hidden = !visible;
     applyRootAttributes();
@@ -2661,7 +2759,17 @@
    * is tracked, and it never throws.
    */
   function tick() {
-    if (!initialised || !WATCHDOG_ON) return;
+    if (!initialised) return;
+    /* SPEC-COOP §5: a player who has just gone down should see their column
+     * say so on the NEXT FRAME, not up to a quarter of a second later when the
+     * 250ms watcher next runs. Edge-triggered and allocation-free, so a caller
+     * that drives this from the game loop pays two reads per frame for it. */
+    try {
+      if (visible) refreshDown();
+    } catch (err) {
+      /* a column's paint must never take the frame down */
+    }
+    if (!WATCHDOG_ON) return;
     try {
       reconcile();
     } catch (err) {
