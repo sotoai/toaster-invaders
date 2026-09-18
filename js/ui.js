@@ -1056,11 +1056,8 @@
     return distinctVariant(CHARS[kind] || NO_CHAR, taken);
   }
 
-  const MODES = {
-    coop: { key: 'coop', label: 'CO-OP', blurb: 'BOTH SHIPS ON ONE BOARD' },
-    classic: { key: 'classic', label: 'CLASSIC', blurb: 'ALTERNATING TURNS' }
-  };
-  const MODE_ORDER = ['coop', 'classic'];
+  const MODES = Object.fromEntries(C.GAME_MODES.map(row => [row.key, row]));
+  const MODE_ORDER = C.GAME_MODES.map(row => row.key);
 
   /** Player accent colour for a slot. */
   function slotColor(slot) {
@@ -1781,7 +1778,7 @@
   const ID_NEXT = ['p0.charNext', 'p1.charNext'];
   const ID_READY = ['p0.ready', 'p1.ready'];
   const ID_JOIN = ['p0.join', 'p1.join'];
-  const ID_MODE = { coop: 'mode.coop', classic: 'mode.classic' };
+  const ID_MODE = Object.fromEntries(MODE_ORDER.map(key => [key, 'mode.' + key]));
   const ID_START = 'title.start';
 
   /* -------------------------------------------------------------------------
@@ -2145,7 +2142,7 @@
 
     drawPadBadges(ctx, TITLE.badgeY, t);
 
-    drawText(ctx, 'INSERT NOTHING  ·  FREE PLAY', C.W / 2, TITLE.flavourY, {
+    drawText(ctx, T.Skins ? 'SKINS: LEFT = BACKGROUND  ·  RIGHT = TOASTERS' : 'INSERT NOTHING  ·  FREE PLAY', C.W / 2, TITLE.flavourY, {
       size: 11, color: PAL.uiDim, align: 'center'
     });
 
@@ -3100,36 +3097,23 @@
         size: 11, color: PAL.uiDim, align: 'center'
       });
 
-    const spread = 150;
+    const cell = (C.W - 72) / MODE_ORDER.length;
     for (let i = 0; i < MODE_ORDER.length; i++) {
       const key = MODE_ORDER[i];
       const m = MODES[key];
-      const cx = C.W / 2 + (i === 0 ? -spread : spread);
+      const cx = 36 + cell * (i + 0.5);
       const on = key === mode;
-      const col = on ? PAL.butter : PAL.uiDim;
-
-      const w = textWidth(ctx, m.label, { size: on ? 22 : 18 });
+      ctx.fillStyle = on ? '#392f23' : '#18151e';
+      ctx.fillRect(cx - cell / 2 + 4, LAY.modeY - 23, cell - 8, 44);
       if (on) {
-        ctx.save();
-        ctx.globalAlpha = pulse(t, 4.2, 0.5, 0.95);
         ctx.fillStyle = PAL.butter;
-        ctx.fillRect(cx - w / 2 - 26, LAY.modeY - 3, 10, 6);
-        ctx.fillRect(cx + w / 2 + 16, LAY.modeY - 3, 10, 6);
-        ctx.restore();
-        if (upDown) {
-          triangle(ctx, cx, LAY.modeY - 20, 6, -1, PAL.butter, pulse(t, 4.2, 0.4, 1));
-          triangle(ctx, cx, LAY.modeY + 20, 6, 1, PAL.butter, pulse(t, 4.2, 0.4, 1));
-        }
+        ctx.fillRect(cx - cell / 2 + 4, LAY.modeY + 18, cell - 8, 3);
       }
-
       drawText(ctx, m.label, cx, LAY.modeY, {
-        size: on ? 22 : 18, color: col, align: 'center',
-        bold: on, glow: on ? 14 : 0
+        size: 16, color: on ? PAL.butter : PAL.uiDim, align: 'center', bold: on
       });
-
-      pushRegion(ID_MODE[key], cx - w / 2 - LAY.modePadX,
-                 LAY.modeY - LAY.modePadY, w + LAY.modePadX * 2,
-                 LAY.modePadY * 2, null, 'mode', key);
+      pushRegion(ID_MODE[key], cx - cell / 2 + 4,
+                 LAY.modeY - 23, cell - 8, 44, null, 'mode', key);
     }
 
     drawText(ctx, MODES[mode].blurb, C.W / 2, LAY.modeBlurbY, {

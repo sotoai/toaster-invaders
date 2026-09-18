@@ -612,6 +612,8 @@
       let steps = 0;
       while (accumulator >= T.C.FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
         T.Game.update(T.C.FIXED_DT);
+        // Keep edges through zero-step frames; consume them once on catch-up.
+        T.Input.endStep();
         accumulator -= T.C.FIXED_DT;
         steps++;
       }
@@ -745,6 +747,7 @@
       T.Game.init(canvas);
 
       initTouch();
+      T.Skins.init(gameRoot);
       // The columns now exist and reserve their edges, so the fit computed
       // before they were built is stale. Re-measure before the first frame,
       // then once more on the next one: env(safe-area-inset-*) is part of the

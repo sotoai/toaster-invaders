@@ -140,6 +140,7 @@
   const flies = [];
   let skyGradient = null;
   let skyGradientCtx = null;
+  let skySkinId = null;
 
   function initBackground() {
     stars.length = 0;
@@ -203,18 +204,23 @@
   }
 
   function drawBackground(ctx) {
-    // Vertical night-sky gradient, built once per context.
-    if (!skyGradient || skyGradientCtx !== ctx) {
+    if (T.Modes && Game.board && Game.state !== 'title' && Game.state !== 'select' &&
+        T.Modes.drawBackground(ctx, Game.board)) return;
+    const skin = T.Skins ? T.Skins.current('background') :
+      { id: 'night', top: PAL.sky, bottom: PAL.skyDeep, star: PAL.star };
+    // Rebuild only when the context or selected background changes.
+    if (!skyGradient || skyGradientCtx !== ctx || skySkinId !== skin.id) {
       skyGradient = ctx.createLinearGradient(0, 0, 0, C.H);
-      skyGradient.addColorStop(0, PAL.sky);
-      skyGradient.addColorStop(1, PAL.skyDeep);
+      skyGradient.addColorStop(0, skin.top);
+      skyGradient.addColorStop(1, skin.bottom);
       skyGradientCtx = ctx;
+      skySkinId = skin.id;
     }
     ctx.fillStyle = skyGradient;
     ctx.fillRect(0, 0, C.W, C.H);
 
     // Parallax starfield.
-    ctx.fillStyle = PAL.star;
+    ctx.fillStyle = skin.star;
     for (let i = 0; i < stars.length; i++) {
       const s = stars[i];
       const L = STAR_LAYERS[s.layer];
@@ -468,7 +474,10 @@
   const SECRET_WAVE_BY_KIND = Object.create(null);
   for (let i = 0; i < SECRET_IDS.length; i++) {
     const sid = SECRET_IDS[i];
-    if (typeof sid === 'string' && sid !== '') SECRET_WAVE_BY_KIND[sid] = SECRET_WAVE;
+    if (typeof sid === 'string' && sid !== '') {
+      const wave = C.SECRET_UNLOCK_WAVES && C.SECRET_UNLOCK_WAVES[sid];
+      SECRET_WAVE_BY_KIND[sid] = Number.isInteger(wave) && wave > 0 ? wave : SECRET_WAVE;
+    }
   }
 
   /** Is this character one the game keeps back until it is earned? */
@@ -835,7 +844,8 @@
     board.aliveCount = list.length;
     board.dir = 1;
     board.frameIdx = 0;
-    board.stepInterval = U.stepInterval(board.aliveCount, board.wave);
+    board.stepInterval = U.stepInterval(board.aliveCount, board.wave) *
+      (T.Modes ? T.Modes.rules(board).march : 1);
     board.stepT = board.stepInterval;
   }
 
@@ -882,7 +892,7 @@
    * with it false is the game exactly as it shipped, and every rule this file
    * gained is gated on it.
    */
-  function createBoard(playerSlots, wave, kinds, variants, mode) {
+  function createBoard(playerSlots, wave, kinds, variants, mode, challenge) {
     /* SPEC-COOP §1: the shared-heart rules are CO-OP WITH TWO PLAYERS and
      * nothing else. Co-op with one player keeps today's feel (a death costs a
      * heart and you respawn) because with no partner to be saved by, a free
@@ -891,6 +901,10 @@
     const shared = mode !== 'classic' && playerSlots.length > 1;
 
     const board = {
+      challenge: challenge || 'coop',
+      baseHealth: C.BASE_HEALTH,
+      baseMaxHealth: C.BASE_HEALTH,
+      baseFlashT: 0,
       slots: playerSlots.slice(),
       ships: [],
       enemies: [],
@@ -1034,6 +1048,7 @@
     buildFormation(board);
     restoreBunkers(board);
     syncHearts(board);
+    if (board.challenge === 'backrooms') T.Backrooms.enter(board);
     return board;
   }
 
@@ -1375,7 +1390,8 @@
     board.stepped = false;
     if (board.slowT > 0) board.slowT = Math.max(0, board.slowT - dt);
 
-    board.stepInterval = U.stepInterval(board.aliveCount, board.wave);
+    board.stepInterval = U.stepInterval(board.aliveCount, board.wave) *
+      (T.Modes ? T.Modes.rules(board).march : 1);
     // SPEC-WEAPONS §5: syrup DIVIDES the interval by SYRUP_SLOW_FACTOR, which
     // lengthens it — a syruped formation marches slower, it does not speed up.
     if (board.slowT > 0) board.stepInterval /= C.SYRUP_SLOW_FACTOR;
@@ -1516,7 +1532,8 @@
     b.alive = true;
     board.bombs.push(b);
 
-    board.bombT = C.BOMB_COOLDOWN * U.randRange(1, 1.7);
+    board.bombT = C.BOMB_COOLDOWN * U.randRange(1, 1.7) *
+      (T.Modes ? T.Modes.rules(board).fire : 1);
   }
 
   /* -------------------------------------------------------------------------
@@ -1861,6 +1878,7 @@
         burst(board, b.x + b.w / 2, C.PLAY_BOTTOM, fx('crumb'));
         b.alive = false;
         bombs.splice(k, 1);
+        if (board.challenge === 'defend') damageBase(board, C.BASE_BOMB_DAMAGE);
       }
     }
   }
@@ -1910,12 +1928,29 @@
     }
   }
 
+  function damageBase(board, amount) {
+    if (board.over) return;
+    board.baseHealth = Math.max(0, board.baseHealth - amount);
+    board.baseFlashT = 0.3;
+    sfx('bunkerHit');
+    if (board.baseHealth === 0) endBoard(board);
+  }
+
   function enemiesVsFloorLine(board) {
     const list = board.enemies;
     for (let i = 0; i < list.length; i++) {
       const e = list[i];
       if (!e.alive) continue;
       if (e.y + e.h >= INVASION_Y) {
+        if (board.challenge === 'defend') {
+          // Breaches cost base health, not points; surviving enemies keep coming.
+          e.alive = false;
+          board.aliveCount--;
+          burst(board, e.x + e.w / 2, e.y + e.h, fx('burnt'));
+          damageBase(board, C.BASE_INVASION_DAMAGE);
+          if (board.over) return;
+          continue;
+        }
         // §3: toasters this deep end the board on the spot.
         for (let k = 0; k < board.ships.length; k++) {
           const ship = board.ships[k];
@@ -2416,7 +2451,7 @@
    * ---------------------------------------------------------------------- */
   function checkWaveClear(board) {
     if (board.aliveCount > 0 || board.clearT > 0 || board.over) return;
-    board.clearT = WAVE_CLEAR_WAIT;
+    board.clearT = board.challenge === 'survival' ? C.SURVIVAL_CLEAR_WAIT : WAVE_CLEAR_WAIT;
     board.bombs.length = 0;
     killUfo(board);
     clearShots(board);
@@ -2443,7 +2478,10 @@
     clearPickups(board);
     board.pickup = null;
     buildFormation(board);
-    restoreBunkers(board);
+    if (board.challenge !== 'survival') restoreBunkers(board);
+    if (board.challenge === 'defend') {
+      board.baseHealth = Math.min(board.baseMaxHealth, board.baseHealth + C.BASE_WAVE_REPAIR);
+    }
 
     let revived = 0;
     for (let i = 0; i < board.ships.length; i++) {
@@ -2478,7 +2516,8 @@
     if (revived > 0) sfx('revive');
     refreshDownNotice(board);
 
-    enterBanner('WAVE ' + board.wave, '', WAVE_BANNER_TIME, true);
+    if (board.challenge === 'survival') enterPlay();
+    else enterBanner('WAVE ' + board.wave, '', WAVE_BANNER_TIME, true);
   }
 
   /* -------------------------------------------------------------------------
@@ -2770,8 +2809,9 @@
     sfx('uiMove');
   }
 
-  /** Set the game mode for BOTH players. §9: co-op or classic, nothing else. */
+  /** Set the rules for both players before the session starts. */
   function pickMode(sel, mode) {
+    if (!C.GAME_MODES.some(row => row.key === mode)) return;
     sel.mode = mode;
     sfx('uiMove');
   }
@@ -2890,6 +2930,7 @@
 
     const session = {
       mode: mode,
+      challenge: sel.mode,
       slots: slots,
       kinds: kinds,
       variants: variants,
@@ -2901,17 +2942,18 @@
 
     if (mode === 'classic') {
       for (let i = 0; i < slots.length; i++) {
-        session.boards.push(createBoard([slots[i]], 1, kinds, variants, mode));
+        session.boards.push(createBoard([slots[i]], 1, kinds, variants, mode, sel.mode));
       }
     } else {
-      session.boards.push(createBoard(slots, 1, kinds, variants, mode));
+      session.boards.push(createBoard(slots, 1, kinds, variants, mode, sel.mode));
     }
 
     Game.session = session;
     Game.board = session.boards[0];
     Game.quitConfirm = false;
 
-    const sub = mode === 'classic' ? 'PLAYER ' + (slots[0] + 1) : '';
+    const sub = mode === 'classic' ? 'PLAYER ' + (slots[0] + 1) :
+      C.GAME_MODES.find(row => row.key === sel.mode).label;
     enterBanner('WAVE 1', sub, WAVE_BANNER_TIME, true);
   }
 
@@ -2955,10 +2997,12 @@
     Game.quitConfirm = false;
     const board = Game.board;
     if (board) {
-      board.stepInterval = U.stepInterval(board.aliveCount, board.wave);
+      board.stepInterval = U.stepInterval(board.aliveCount, board.wave) *
+      (T.Modes ? T.Modes.rules(board).march : 1);
       lastTempo = board.stepInterval;
       marchTempo(board.stepInterval);
-      marchStart();
+      if (board.challenge === 'backrooms') marchStop();
+      else marchStart();
       if (board.ufo) sirenStart();
     }
   }
@@ -3111,7 +3155,9 @@
 
       // Up / down flips the game mode for everyone.
       if (pd.upPressed || pd.downPressed) {
-        pickMode(sel, sel.mode === 'coop' ? 'classic' : 'coop');
+        const index = C.GAME_MODES.findIndex(row => row.key === sel.mode);
+        const step = pd.downPressed ? 1 : -1;
+        pickMode(sel, C.GAME_MODES[(index + step + C.GAME_MODES.length) % C.GAME_MODES.length].key);
       }
       if (pd.backPressed) {
         if (p.slot === 1) {
@@ -3181,9 +3227,31 @@
     }
   }
 
+  function nextMazeRoom(board) {
+    // wave is the completed-room count here, independent of wiki level IDs.
+    if (board.wave % 3 === 0) {
+      if (board.sharedHearts) board.hearts = Math.min(board.heartsMax, board.hearts + 3);
+      else for (const ship of board.ships) ship.lives = Math.min(board.heartsMax, ship.lives + 3);
+      syncHearts(board);
+    }
+    board.wave++;
+    checkSecretUnlock(board);
+    if (board.sharedHearts) reviveAllDown(board);
+    for (const ship of board.ships) {
+      if (ship.alive) ship.spawnInvuln = SPAWN_INVULN;
+    }
+    T.Backrooms.enter(board);
+    sfx('waveStart');
+  }
+
+  const BACKROOM_HOOKS = {
+    hit: hitShip, finishDeath: finishDeath, score: addScore, nextRoom: nextMazeRoom
+  };
+
   function updatePlay(dt) {
     const board = Game.board;
     if (!board) { toTitle(); return; }
+    board.baseFlashT = Math.max(0, board.baseFlashT - dt);
 
     if (anyPressed('start')) {
       consumeAll('start');
@@ -3197,6 +3265,11 @@
       updateBooms(board, dt);
       if (board.particles && board.particles.update) board.particles.update(dt);
       if (board.endT <= 0) boardFinished(board);
+      return;
+    }
+
+    if (board.challenge === 'backrooms') {
+      T.Backrooms.update(board, dt, BACKROOM_HOOKS);
       return;
     }
 
@@ -3377,6 +3450,7 @@
   }
 
   function renderBoard(ctx, board) {
+    if (board.challenge === 'backrooms') { T.Backrooms.render(ctx, board); return; }
     renderFloor(ctx);
     renderBunkers(ctx, board);
     renderEnemies(ctx, board);
@@ -3389,6 +3463,7 @@
     renderBooms(ctx, board);
     if (board.particles && board.particles.render) board.particles.render(ctx);
     renderPopups(ctx, board);
+    if (T.Modes) T.Modes.renderOverlay(ctx, board);
   }
 
   /**
@@ -3401,6 +3476,7 @@
    * marks it down from `ship.down` / `ship.downWaiting`.
    */
   function renderWeaponHud(ctx, board) {
+    if (board.challenge === 'backrooms') return;
     for (let i = 0; i < board.ships.length; i++) {
       const ship = board.ships[i];
       if (ship.out) continue;
@@ -3518,7 +3594,7 @@
     // The mode selector belongs to the screen, not to either panel.
     if (action === 'mode') {
       const mode = region.value;
-      if (mode !== 'coop' && mode !== 'classic') return false;
+      if (!C.GAME_MODES.some(row => row.key === mode)) return false;
       pickMode(sel, mode);
       return ackTap(region);
     }
@@ -3636,6 +3712,7 @@
     update: function (dt) {
       this.time += dt;
       updateBackground(dt);
+      if (T.Skins) T.Skins.update(this);
 
       switch (this.state) {
         case 'title':  updateTitle(dt);  break;

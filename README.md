@@ -10,7 +10,7 @@ Fifty-five winged chrome toasters march down the screen. You are a slice of unto
 bread, or a jam jar, or a coffee mug, or one of six other things off the breakfast
 table, and you have three lives and one shot on screen at a time to stop them.
 
-No install, no download, no plugin, no account. It is one HTML file and ten scripts.
+No install, no download, no plugin, no account. It is one HTML file and thirteen scripts.
 Every sprite is a hand-authored pixel map rasterized in your browser at boot, and
 every sound is synthesized with WebAudio on the spot — there is not a single image
 or audio file in the repo.
@@ -103,6 +103,19 @@ controller** to wake it up. The title screen shows which pads it can see.
 
 Gamepads work on iPadOS too — Safari supports the Gamepad API for MFi, Xbox and
 DualSense pads.
+
+---
+
+## Background and toaster skins
+
+Open **SKINS** on the title or pause screen. Choose backgrounds (After Dark,
+Aurora, Sunset, Deep Space) and toaster finishes (Classic Chrome, Golden Toast,
+Mint Kitchen, Berry Pop) independently. Choices are saved on this device.
+
+On the title or pause screen, either controller's **D-pad left** cycles the
+background and **D-pad right** cycles the toasters. Keyboard movement keys work
+too. Skins are cosmetic: enemy movement, hitboxes, scoring and difficulty stay
+the same. The chooser hides during gameplay.
 
 ---
 
@@ -199,7 +212,7 @@ is a recoloured basic shot:
 
 ---
 
-## The two game modes
+## Game modes
 
 Pick the mode on the select screen with **up / down**.
 
@@ -208,6 +221,44 @@ Pick the mode on the select screen with **up / down**.
   are out.
 - **CLASSIC** — the faithful alternating-turns arcade behaviour. Each player gets their
   own board and their own wave counter, and play swaps to the other player on death.
+
+Three additional modes support one or two simultaneous players:
+
+- **BACKROOMS** — an endless top-down maze adventure. Find the yellow terminal
+  to receive your task and defeat the required number of monsters. Seven level
+  environments rotate through the endless run, each with a freshly generated
+  layout and a different objective: Level 0 / Threshold (fuses), Level 1 /
+  Habitable Zone (supply crates), Level 2 / Abandoned Utility Halls (valves),
+  Level 3 / Electrical Station (breakers), Level 37 / Sublimity (survey markers),
+  Level Fun (party invitations), and Level 35 / An Empty Car Park (keycards).
+  Environmental designs adapt the Backrooms Wikidot articles; see
+  [sources and attribution](credits.html). Tasks, toaster monsters, and the looping
+  route are game adaptations, including combat in normally peaceful Level 37.
+  Wiki level numbers are separate from the run's room count and character unlocks.
+  The green exit opens only when both objectives are complete.
+  Every three completed rooms restore three hearts, capped at full health.
+  Every maze is now 61 × 37 tiles (over eight times the original area), with
+  a scrolling camera, objective map, and independent side-by-side cameras in co-op.
+  Each environment has two exclusive toaster creatures (14 designs), with shaded
+  metal shells, breathing, articulated limbs, and environment-specific anatomy.
+  Wallflowers freeze under a direct flashlight; mimics stay disguised until approached
+  or shot. Pathfinding is cached per player tile to keep large maps responsive.
+  Every exit leads to a new maze. The flashlight follows your facing direction
+  and walls block its beam. Three corrupted toaster types hunt you: fast Stalkers,
+  armored Furnaces, and dormant Mimics that wake when approached or shot.
+  Stalkers have lopsided jaws and wire limbs; Furnaces have swollen casings and
+  huge burning mouths. Mimics disguise themselves as ordinary countertop
+  toasters before unfolding into many-eyed creatures.
+  Quiet electrical noises and a nearby-threat heartbeat accompany the maze.
+  Move with the stick/D-pad or WASD; hold A or
+  Space to shoot in the direction you last moved. Characters use the same maze
+  blaster here. Room numbers count toward secret-character unlocks, including
+  the instant a new room begins.
+- **DEFEND BASE** — protect a 12-health base. Enemy bombs reaching the floor
+  cost one health; toaster breaches cost three. Clearing a wave repairs two.
+  Lose the base or your team's lives and the run ends.
+- **SURVIVAL** — faster marching and enemy fire, no banners between waves,
+  and no bunker repairs. Survive as long as you can.
 
 One player is just co-op with a single ship, and is fully supported. Player two joins
 on the select screen — press START or FIRE on a second pad, use the P2 keyboard
@@ -260,9 +311,12 @@ js/util.js      T.C, T.Util          constants, palette, RNG, pools, storage
 js/audio.js     T.Audio              WebAudio synthesis
 js/input.js     T.Input              keyboard, Gamepad API, virtual pad
 js/touch.js     T.Touch              on-screen controls, feeds the virtual pad
+js/skins.js     T.Skins              cosmetic settings and skin chooser
 js/sprites.js   T.Sprites            pixel maps, rasterizer, variant palettes
 js/entities.js  T.Entities           entities, pools, pixel-accurate bunkers
 js/weapons.js   T.Weapons            base weapons, upgrades, crates, tokens
+js/modes.js     T.Modes              challenge rules and base-health display
+js/backrooms.js T.Backrooms          endless mazes, objectives and monsters
 js/game.js      T.Game               state machine, waves, collisions, scoring
 js/ui.js        T.UI                 title, select, HUD, banners, scanlines
 js/main.js      boot                 fixed-timestep loop, letterboxing, resize

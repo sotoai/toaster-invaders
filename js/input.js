@@ -7,6 +7,7 @@
  *
  *   T.Input.init()                        attach listeners; call once at boot
  *   T.Input.poll()                        call ONCE per frame, before update
+ *   T.Input.endStep()                     clear presses AFTER each game update
  *   T.Input.get(i)                        i = 0 | 1 → PadState (stable object)
  *   T.Input.anyPressed(name)              either pad's rising edge this frame
  *   T.Input.padCount()                    physically connected gamepads
@@ -25,8 +26,8 @@
  *   - Slot assignment is sticky: gamepad.index → player slot is remembered, so
  *     a pad that unplugs and comes back gets its old slot if it is still free.
  *     A pad parked in slot 1 can never bleed into slot 0.
- *   - Every '*Pressed' flag is a rising edge computed inside poll() by diffing
- *     against the value the state object still holds from the previous frame.
+ *   - Every '*Pressed' flag latches a rising edge until endStep(), so display
+ *     frames without a simulation update cannot lose presses.
  *   - PadState objects are built once and mutated in place — poll() allocates
  *     nothing except the array navigator.getGamepads() insists on returning.
  *   - The keyboard bindings stay live even when pads are connected, so the game
@@ -440,6 +441,7 @@
     for (const code in keysDown) keysDown[code] = false;
     tappedCodes.length = 0;
     releaseAllVirtual();
+    endStep();
   }
 
   function onBlur() {
@@ -709,22 +711,22 @@
     // a tap on a touchscreen routinely lands and lifts inside one 16ms frame,
     // and without it a re-tap of FIRE while the button still reads as held
     // would silently drop a shot.
-    st.firePressed = fire &&
-      (!st.fire || bindingTapped(km.fire) || virtualTapped(slot, 'fire'));
-    st.startPressed = start &&
-      (!st.start || bindingTapped(km.start) || virtualTapped(slot, 'start'));
-    st.backPressed = back &&
-      (!st.back || bindingTapped(km.back) || virtualTapped(slot, 'back'));
-    st.altCharPressed = altChar &&
-      (!st.altChar || bindingTapped(km.altChar) || virtualTapped(slot, 'altChar'));
-    st.leftPressed = left &&
-      (!st.left || bindingTapped(km.left) || virtualTapped(slot, 'left'));
-    st.rightPressed = right &&
-      (!st.right || bindingTapped(km.right) || virtualTapped(slot, 'right'));
-    st.upPressed = up &&
-      (!st.up || bindingTapped(km.up) || virtualTapped(slot, 'up'));
-    st.downPressed = down &&
-      (!st.down || bindingTapped(km.down) || virtualTapped(slot, 'down'));
+    st.firePressed = st.firePressed || (fire &&
+      (!st.fire || bindingTapped(km.fire) || virtualTapped(slot, 'fire')));
+    st.startPressed = st.startPressed || (start &&
+      (!st.start || bindingTapped(km.start) || virtualTapped(slot, 'start')));
+    st.backPressed = st.backPressed || (back &&
+      (!st.back || bindingTapped(km.back) || virtualTapped(slot, 'back')));
+    st.altCharPressed = st.altCharPressed || (altChar &&
+      (!st.altChar || bindingTapped(km.altChar) || virtualTapped(slot, 'altChar')));
+    st.leftPressed = st.leftPressed || (left &&
+      (!st.left || bindingTapped(km.left) || virtualTapped(slot, 'left')));
+    st.rightPressed = st.rightPressed || (right &&
+      (!st.right || bindingTapped(km.right) || virtualTapped(slot, 'right')));
+    st.upPressed = st.upPressed || (up &&
+      (!st.up || bindingTapped(km.up) || virtualTapped(slot, 'up')));
+    st.downPressed = st.downPressed || (down &&
+      (!st.down || bindingTapped(km.down) || virtualTapped(slot, 'down')));
 
     // --- commit this frame's held state -------------------------------------
     st.axisX = axisX;
@@ -879,6 +881,21 @@
     return virtualClaimed[s];
   }
 
+  /** A press belongs to one simulation step, not one display frame. */
+  function endStep() {
+    for (let s = 0; s < states.length; s++) {
+      const st = states[s];
+      st.firePressed = false;
+      st.startPressed = false;
+      st.backPressed = false;
+      st.altCharPressed = false;
+      st.leftPressed = false;
+      st.rightPressed = false;
+      st.upPressed = false;
+      st.downPressed = false;
+    }
+  }
+
   /** Clear one rising edge so a menu does not act on it twice. */
   function consume(i, name) {
     const s = (i === 1) ? 1 : 0;
@@ -948,6 +965,7 @@
   T.Input = {
     init: init,
     poll: poll,
+    endStep: endStep,
     get: get,
     anyPressed: anyPressed,
     padCount: padCount,

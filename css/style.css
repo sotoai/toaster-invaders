@@ -1562,3 +1562,44 @@ kbd {
     scroll-behavior: auto !important;
   }
 }
+
+/* Cosmetic chooser stays outside gameplay and remains reachable on touch. */
+#skin-picker {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top));
+  right: max(8px, env(safe-area-inset-right));
+  z-index: 100;
+  color: #f3dfa8;
+  font: 12px monospace;
+  max-width: calc(100% - 16px);
+}
+#skin-picker[hidden] { display: none; }
+#skin-picker summary {
+  cursor: pointer;
+  padding: 14px 18px;
+  background: #191521;
+  border: 1px solid #786343;
+  border-radius: 6px;
+  min-height: 44px;
+  box-sizing: border-box;
+}
+.skin-options {
+  padding: 14px;
+  background: #191521;
+  border: 1px solid #786343;
+  border-radius: 6px;
+  box-shadow: 0 8px 28px #0009;
+}
+.skin-options label { display: block; margin-bottom: 12px; }
+.skin-options select {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
+  background: #302738;
+  color: #fff1d6;
+  border: 1px solid #a18a66;
+  border-radius: 4px;
+  font: inherit;
+}
+.skin-options p { margin: 6px 0 0; font-size: 11px; }

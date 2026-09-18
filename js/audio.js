@@ -595,6 +595,26 @@
    * upgrade cues — see the banner over fireFlake, at the bottom of the table.
    * ====================================================================== */
   const SOUNDS = {
+    // Low, short cues: scheduled by maze play time, never persistent loops.
+    mazeHum: function (g, t0) {
+      tone(g, { type: 'sawtooth', f0: 58, f1: 54, glide: 0.35,
+        t0: t0, attack: 0.06, decay: 0.36, peak: 0.10,
+        filter: { type: 'lowpass', f0: 280, f1: 130, q: 0.8 } });
+      noise(g, { t0: t0, attack: 0.04, decay: 0.34, peak: 0.07,
+        filter: { type: 'bandpass', f0: 900, f1: 450, q: 2 } });
+    },
+    mazeHeartbeat: function (g, t0) {
+      tone(g, { type: 'sine', f0: 82, f1: 40, glide: 0.10,
+        t0: t0, attack: 0.008, decay: 0.16, peak: 0.22 });
+      tone(g, { type: 'sine', f0: 68, f1: 35, glide: 0.10,
+        t0: t0 + 0.18, attack: 0.008, decay: 0.14, peak: 0.14 });
+    },
+    mazeAwake: function (g, t0) {
+      tone(g, { type: 'triangle', f0: 170, f1: 520, glide: 0.18,
+        t0: t0, attack: 0.02, decay: 0.28, peak: 0.15 });
+      noise(g, { t0: t0, attack: 0.01, decay: 0.25, peak: 0.12,
+        filter: { type: 'highpass', f0: 1700, f1: 900, q: 0.7 } });
+    },
 
     /* Bread's butter shot: round and soft. A triangle body dropping a big
      * interval fast, with a sine sub underneath for the 'p' of the pwop. */

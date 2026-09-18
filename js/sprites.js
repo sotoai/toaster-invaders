@@ -88,6 +88,7 @@
 
     // The secret tenth character's life icon, same 22x17 exception again.
     lifeBurrito: 1,
+    lifeSmore: 1,
 
     // Odd-width base projectiles (see above).
     drip: 1,
@@ -269,6 +270,9 @@
    * each of them the same colour variant 0 (CARNE ASADA) does — build() proves
    * that with assertVariantZeroMatchesBase(), because index 0 is by definition
    * the character as this file draws him. */
+  const KEY_SMORE = {"G": "#c98a3f", "L": "#f3dfa8", "W": "#fff1d6", "T": "#d9b889", "C": "#573326", "K": "#241b20"};
+  const KEY_MARSHMALLOW = {"W": "#fff1d6", "T": "#d9b889"};
+
   const KEY_BURRITO = {
     C: PAL.burritoFoil,    // foil sheath
     L: PAL.burritoFoilLt,  // the bright crease down one side of it
@@ -494,6 +498,8 @@
      * strip's, the croissant's and the pepper grinder's, and are already
      * registered above. */
     burrito0: KEY_BURRITO, burrito1: KEY_BURRITO,
+    smore0: KEY_SMORE, smore1: KEY_SMORE, lifeSmore: KEY_SMORE,
+    marshmallow: KEY_MARSHMALLOW,
     lifeBurrito: KEY_BURRITO
   };
 
@@ -587,6 +593,8 @@
      * wide when it finally reaches the play field. No projectile row, because
      * he borrows three that are already up there. */
     burrito0: [44, 34], burrito1: [44, 34],
+    smore0: [44, 34], smore1: [44, 34], lifeSmore: [22, 17],
+    marshmallow: [12, 16],
     lifeBurrito: [22, 17]
   };
 
@@ -2271,6 +2279,74 @@
      * does: raises and thickens the brows, opens the mouth to a wide
      * rectangle, and jolts what he is holding — the filling sloshes and a
      * fleck of it flies out past the wrap, the way the carton throws milk. */
+    smore0: [
+      "......................",
+      "...GGGGGGGGGGGGGGGG...",
+      "..GLLLLLLLLLLLLLLLLG..",
+      "..GLGLGLGLGLGLGLGLLG..",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "...CCCCCCCCCCCCCCCC...",
+      "..WWWWWWWWWWWWWWWWWW..",
+      ".WWWWWWWWWWWWWWWWWWWW.",
+      ".WWWKKWWWWWWWWKKWWWWW.",
+      ".WWWWKWWWWWWWWKWWWWWW.",
+      ".WWWWWWWWWWWWWWWWWWWW.",
+      "..WWWWWWKKKKWWWWWWWW..",
+      "...TTWWWWWWWWWWTTTT...",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "..GLLLLGLGLGLGLLLLLG..",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "......................"
+],
+    smore1: [
+      ".........WWWW.........",
+      "...GGGGGGGGGGGGGGGG...",
+      "..GLLLLLLLLLLLLLLLLG..",
+      "..GLGLGLGLGLGLGLGLLG..",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "...CCCCCCCCCCCCCCCC...",
+      "..WWWWWWWWWWWWWWWWWW..",
+      ".WWWKKKWWWWWWKKKWWWWW.",
+      ".WWWKKWWWWWWWWKKWWWWW.",
+      ".WWWWKWWWWWWWWKWWWWWW.",
+      ".WWWWWWWKKKKKKWWWWWWW.",
+      "..WWWWWWKKKKKKWWWWWW..",
+      "...TTWWWWWWWWWWTTTT...",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "..GLLLLGLGLGLGLLLLLG..",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "......................"
+],
+    lifeSmore: [
+      "......................",
+      "...GGGGGGGGGGGGGGGG...",
+      "..GLLLLLLLLLLLLLLLLG..",
+      "..GLGLGLGLGLGLGLGLLG..",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "...CCCCCCCCCCCCCCCC...",
+      "..WWWWWWWWWWWWWWWWWW..",
+      ".WWWWWWWWWWWWWWWWWWWW.",
+      ".WWWKKWWWWWWWWKKWWWWW.",
+      ".WWWWKWWWWWWWWKWWWWWW.",
+      ".WWWWWWWWWWWWWWWWWWWW.",
+      "..WWWWWWKKKKWWWWWWWW..",
+      "...TTWWWWWWWWWWTTTT...",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "..GLLLLGLGLGLGLLLLLG..",
+      "..GGGGGGGGGGGGGGGGGG..",
+      "......................"
+],
+    marshmallow: [
+      "..WW..",
+      ".WWWW.",
+      "WWWWWW",
+      "WWWWWW",
+      "WWWWWW",
+      "TWWWWT",
+      ".TTTT.",
+      "..TT.."
+],
+
     burrito0: [
       '........RbbbbbbbR.....',
       '.....RbjJJjJJJjJbR....',
@@ -2664,6 +2740,140 @@
    * Horizontal runs of the same colour are filled with a single fillRect, so a
    * 48x32 bunker costs a few dozen draws instead of 1536.
    */
+  // Corrupted Backrooms toasters: cached pixel art for every animation pose.
+  KEYS.horrorStalker0 = {"D": "#27242d", "C": "#766c72", "L": "#b5a19a", "K": "#100f16", "E": "#ff6663", "H": "#ffcfb0", "T": "#e7d4ac", "R": "#57392c", "O": "#8e3133"};
+  SIZES.horrorStalker0 = [40, 36];
+  MAPS.horrorStalker0 = [
+    "....................",
+    "........TTTK........",
+    ".......RTKTKR.......",
+    ".......RTKTKR.......",
+    ".......RRRRRR.....L.",
+    ".L..DLKKKKKKKCD..LD.",
+    ".DL.DLCDDDDDCCD..DD.",
+    ".DDLDKHHHKCKKCD..D..",
+    "..DDDKHEHKCEEED..E..",
+    "...DDKKKKKCKKCD..E..",
+    "......DLTKTKTKTCDL..",
+    "......DLKKKKKKKCD...",
+    "...L..DLKKKOKKKCL...",
+    ".LL...DLTKTOTKTCDL..",
+    "L.....DCCCCCOCCCD.L.",
+    "......DDDDDDDODDD.L.",
+    "......DD.L...DOO.L..",
+    ".....LL..L....LL...."
+];
+  KEYS.horrorStalker1 = {"D": "#27242d", "C": "#766c72", "L": "#b5a19a", "K": "#100f16", "E": "#ff6663", "H": "#ffcfb0", "T": "#e7d4ac", "R": "#57392c", "O": "#8e3133"};
+  SIZES.horrorStalker1 = [40, 36];
+  MAPS.horrorStalker1 = [
+    "....................",
+    "........TTTK........",
+    ".......RTKTKR.......",
+    ".......RTKTKR.......",
+    ".......RRRRRR.....L.",
+    ".L..DLKKKKKKKCD..LD.",
+    ".DL.DLCDDDDDCCD..DD.",
+    ".DDLDKHHHKCKKCD..D..",
+    "..DDDKHHEKCEEED..E..",
+    "...DDKKKKKKKKCD..E..",
+    "......DLTTTKTTTCDL..",
+    "......DLKKKKKKKCD...",
+    "...L..DLKKKOKKKCL...",
+    ".LL...DLTKTOTKTCDL..",
+    "L.....DCCCCOOCCCD.L.",
+    "......DDDDDOOODDD.L.",
+    "......DD.L...DOO.L..",
+    ".....LL..L....LL...."
+];
+  KEYS.horrorFurnace0 = {"D": "#35231f", "C": "#86523a", "L": "#c48c56", "K": "#160e11", "E": "#ffc05e", "H": "#fff0bc", "T": "#ffe2ab", "R": "#5b3121", "O": "#e55b2c"};
+  SIZES.horrorFurnace0 = [40, 36];
+  MAPS.horrorFurnace0 = [
+    "....................",
+    "........TTTK...DO...",
+    "..LLLL.RTKTKR..DD...",
+    "..LLLL.RTKTKR..DD...",
+    "...DD..RRRRRR..DD.L.",
+    ".L.DDDLKKKKKKKCDDLD.",
+    ".DLDDDLCDDDDKKKDDDD.",
+    ".DDDDDLKKKCCKHHDDD..",
+    "..DDDDEEEECCKKEDDE..",
+    "...DDDLCCCCCCCCD.E..",
+    "...DDDLTKKTKKTKTCC..",
+    "....DDLKKKKKKKKKCL..",
+    "....DDLKOOOOOOOKCL..",
+    "....DDLKHEHEHEHKCL..",
+    "....DDCTKKTKKTKTCC..",
+    ".....DDDDDDDDDDDL...",
+    ".....LDD.....DD..LL.",
+    "....LLL.......LL...."
+];
+  KEYS.horrorFurnace1 = {"D": "#35231f", "C": "#86523a", "L": "#c48c56", "K": "#160e11", "E": "#ffc05e", "H": "#fff0bc", "T": "#ffe2ab", "R": "#5b3121", "O": "#e55b2c"};
+  SIZES.horrorFurnace1 = [40, 36];
+  MAPS.horrorFurnace1 = [
+    "....................",
+    "........TTTK...DO...",
+    "..LLLL.RTKTKR..DD...",
+    "..LLLL.RTKTKR..DD...",
+    "...DD..RRRRRR..DD.L.",
+    ".L.DDDLKKKKKKKCDDLD.",
+    ".DLDDDLCDDDDKKKDDDD.",
+    ".DDDDDLKKKCCKHHDDD..",
+    "..DDDDEEEECCKKEDDE..",
+    "...DDDLKTKKKTKCD.E..",
+    "...DDDLTKKTKKTKTCC..",
+    "....DDLKKKKKKKKKCL..",
+    "....DDLKOOOOOOOKCL..",
+    "....DDLKEHEHEHEKCL..",
+    "....DDCTKKTKKTKTCC..",
+    ".....DDDDDOODDDDL...",
+    ".....LDD.....DD..LL.",
+    "....LLL.......LL...."
+];
+  KEYS.horrorMimic0 = {"D": "#283432", "C": "#6a8d7b", "L": "#c4c99c", "K": "#101b20", "E": "#a8ffe4", "H": "#f3ffcb", "T": "#d9e5c4", "R": "#384d40", "O": "#547b67"};
+  SIZES.horrorMimic0 = [40, 36];
+  MAPS.horrorMimic0 = [
+    "....................",
+    "....................",
+    "........TTTT........",
+    "........TTTT........",
+    "......DKKKKKD.......",
+    "....CLDDDDDDDCCC....",
+    "...DCLLCCCCCCCCCD...",
+    "...DCLLCCCCCCCCCD...",
+    "...DCLLCCCCCCCCCLL..",
+    "...DCLLCCCCCCCCCLL..",
+    "...DCLLCCCCCCCCCDO..",
+    "...DCLLCCCCCCKKCD...",
+    "...DCLLCCCCCCKKCD...",
+    "...DCCCCCCCCCCCCD...",
+    "...DDDDDDDDDDDDDD...",
+    "....DDD......DDD....",
+    "....................",
+    "...................."
+];
+  KEYS.horrorMimic1 = {"D": "#283432", "C": "#6a8d7b", "L": "#c4c99c", "K": "#101b20", "E": "#a8ffe4", "H": "#f3ffcb", "T": "#d9e5c4", "R": "#384d40", "O": "#547b67"};
+  SIZES.horrorMimic1 = [40, 36];
+  MAPS.horrorMimic1 = [
+    "....................",
+    "........TTTK........",
+    ".......RTKTKR.......",
+    ".......RTKTKR.....L.",
+    ".......RRRRRR....LL.",
+    ".L..DCCCCHECCCCCLLD.",
+    ".DL.DHECCCCCCHECDDD.",
+    ".DDLDCCCCCCCCCCCDD..",
+    "..DDDCTKTKTKTKTKDE..",
+    "...DDCKKKKKKKKKKHE..",
+    "....DCKKKKKKKKKKDL..",
+    "....DCKKKKOOKKKKD...",
+    "....DCKKKKOOKKKKD...",
+    "....DCKTKTOOKTKTD...",
+    "....DLDDDDOODLDDD...",
+    "....LDDDDDOOOODL.L..",
+    "..LL..DD.....DD.L.L.",
+    ".L...LL.......LL...."
+];
+
   function rasterize(name, map, key, scale) {
     if (!Array.isArray(map) || map.length === 0) {
       throw new Error('Sprite "' + name + '": pixel map is missing or empty.');
@@ -3097,12 +3307,26 @@
     // The thirty playable versions, recoloured off the maps just built above.
     buildCharacterVariants();
 
+    // Skin only the chrome body/coil; preserve wings, silhouettes and sizes.
+    if (T.Skins) {
+      for (const skin of T.Skins.toasters) {
+        if (skin.id === 'chrome') continue;
+        for (const name of Object.keys(MAPS)) {
+          // Match the palette family so every wing pose receives the skin.
+          if (KEYS[name] !== KEY_TOASTER && KEYS[name] !== KEY_UFO) continue;
+          const key = Object.assign({}, KEYS[name], skin.key);
+          sprites[name + '@' + skin.id] = rasterize(name, MAPS[name], key, SCALE_OVERRIDE[name] || SCALE);
+        }
+      }
+    }
+
     built = true;
   }
 
   /** @returns {{canvas:HTMLCanvasElement, w:number, h:number}} — do not mutate. */
   function get(name) {
-    const s = sprites[name];
+    const skinId = T.Skins ? T.Skins.current('toaster').id : 'chrome';
+    const s = sprites[name + '@' + skinId] || sprites[name];
     if (!s) {
       throw new Error(built
         ? 'Unknown sprite "' + name + '".'
@@ -3140,10 +3364,11 @@
     const s = get(name);
     const alpha = (typeof strength === 'number') ? strength : TINT_ALPHA;
 
-    let byColour = tintCache[name];
+    const cacheName = name + '@' + (T.Skins ? T.Skins.current('toaster').id : 'chrome');
+    let byColour = tintCache[cacheName];
     if (byColour === undefined) {
       byColour = Object.create(null);
-      tintCache[name] = byColour;
+      tintCache[cacheName] = byColour;
     }
     let slots = byColour[colour];
     if (slots === undefined) {

@@ -1125,6 +1125,95 @@
      * and they are deliberately not a fourth tunable: the balance dial for
      * this character is T.C.BURRITO_REFIRE_MULT, one number, down in C.
      */
+    // Wave-seven secret: broad marshmallows trade speed for forgiving aim.
+    smore: {
+      "id": "smore",
+      "char": "S'MORE",
+      "blurb": "ONE MORE FOR THE CAMPFIRE",
+      "weapon": "MARSHMALLOW",
+      "wid": "marshmallow",
+      "tagline": "SOFT LANDING. HARD HIT.",
+      "color": "#f3dfa8",
+      "mech": "plain",
+      "speed": 500,
+      "w": 12,
+      "h": 16,
+      "refire": 0.3,
+      "dmg": 7,
+      "ship": "smore0",
+      "shipFire": "smore1",
+      "life": "lifeSmore",
+      "shot": "marshmallow",
+      "sfx": "shootButter",
+      "advantage": "WIDE MARSHMALLOW \u2014 FORGIVING AIM",
+      "drawback": "SLOW SHOT AND LONGER REFIRE",
+      "variants": [
+            {
+                  "id": "smore.0",
+                  "name": "CAMPFIRE",
+                  "flavour": "TOASTED TO PERFECTION",
+                  "key": {
+                        "G": "#c98a3f",
+                        "L": "#f3dfa8",
+                        "W": "#fff1d6",
+                        "T": "#d9b889",
+                        "C": "#573326",
+                        "K": "#241b20"
+                  },
+                  "overlay": null,
+                  "shotKey": {
+                        "W": "#fff1d6",
+                        "T": "#d9b889"
+                  },
+                  "shotOverlay": null,
+                  "trailColor": "#fff1d6",
+                  "sfxDetune": 0
+            },
+            {
+                  "id": "smore.1",
+                  "name": "DARK CHOCOLATE",
+                  "flavour": "EXTRA DARK. EXTRA MELTY.",
+                  "key": {
+                        "G": "#a87846",
+                        "L": "#dbc19a",
+                        "W": "#fff7e8",
+                        "T": "#cab8a3",
+                        "C": "#302024",
+                        "K": "#241b20"
+                  },
+                  "overlay": null,
+                  "shotKey": {
+                        "W": "#fff7e8",
+                        "T": "#cab8a3"
+                  },
+                  "shotOverlay": null,
+                  "trailColor": "#fff7e8",
+                  "sfxDetune": -160
+            },
+            {
+                  "id": "smore.2",
+                  "name": "STRAWBERRY",
+                  "flavour": "BERRY GOOD AT THIS",
+                  "key": {
+                        "G": "#d99d63",
+                        "L": "#ffe1b2",
+                        "W": "#ffd0dc",
+                        "T": "#e698af",
+                        "C": "#833c50",
+                        "K": "#241b20"
+                  },
+                  "overlay": null,
+                  "shotKey": {
+                        "W": "#ffd0dc",
+                        "T": "#e698af"
+                  },
+                  "shotOverlay": null,
+                  "trailColor": "#ffd0dc",
+                  "sfxDetune": 180
+            }
+      ]
+},
+
     burrito: {
       id: 'burrito', char: 'BURRITO', blurb: 'FOIL-WRAPPED, FULLY LOADED',
       weapon: 'WRAPPED', wid: 'wrapped', tagline: 'WHATEVER IS IN THERE',
@@ -1197,7 +1286,7 @@
    * this array without asking is walking ten characters, so every walker that
    * a player can see the result of has to ask. */
   const CHARACTER_ORDER = ['bread', 'jam', 'croissant', 'mug', 'pepper',
-                           'honey', 'cheese', 'bacon', 'milk', 'burrito'];
+                           'honey', 'cheese', 'bacon', 'milk', 'burrito', 'smore'];
 
   /* -------------------------------------------------------------------------
    * CONSTANTS
@@ -1769,7 +1858,311 @@
      * BURRITO_UNLOCK_WAVE is the whole unlock condition (§2): reaching that
      * wave, not clearing it, not surviving it.
      */
-    SECRET_CHARACTERS: ['burrito'],
+    GAME_MODES: [
+      { key: 'coop', label: 'CO-OP', blurb: 'BOTH SHIPS ON ONE BOARD', march: 1, fire: 1 },
+      { key: 'classic', label: 'CLASSIC', blurb: 'ALTERNATING TURNS', march: 1, fire: 1 },
+      { key: 'backrooms', label: 'BACKROOMS', blurb: 'ENDLESS MAZES · DIFFERENT LEVELS · TASKS · MONSTERS', march: 1, fire: 1 },
+      { key: 'defend', label: 'DEFEND BASE', blurb: 'BLOCK BOMBS · PROTECT THE BASE · +2 REPAIR EACH WAVE', march: 1, fire: 1 },
+      { key: 'survival', label: 'SURVIVAL', blurb: 'FASTER ATTACKS · NO WAVE BREAKS · NO SHIELD REPAIRS', march: 0.75, fire: 0.6 }
+    ],
+    BASE_HEALTH: 12,
+    BASE_BOMB_DAMAGE: 1,
+    BASE_INVASION_DAMAGE: 3,
+    BASE_WAVE_REPAIR: 2,
+    BACKROOMS_LIGHT_WIDTH: 220,
+    // Wikidot environment adaptations; see credits.html for attribution.
+    BACKROOMS_LEVELS: [
+      {
+            "id": "lobby",
+            "wikiLevel": 0,
+            "name": "THRESHOLD",
+            "subtitle": "DAMP CARPET \u00b7 YELLOW WALLPAPER \u00b7 FLUORESCENT HUM",
+            "layout": "maze",
+            "wall": "#b2a15b",
+            "edge": "#d0c182",
+            "detail": "#796d38",
+            "floor": "#625638",
+            "bg": "#17150d",
+            "item": "#7ef0ff",
+            "task": "RESTORE POWER",
+            "collect": "FUSES",
+            "count": 3,
+            "ambient": 0.18
+      },
+      {
+            "id": "warehouse",
+            "wikiLevel": 1,
+            "name": "HABITABLE ZONE",
+            "subtitle": "CONCRETE HALLS \u00b7 SUPPORT PILLARS \u00b7 ABANDONED SUPPLIES",
+            "layout": "warehouse",
+            "wall": "#858982",
+            "edge": "#c4c9bd",
+            "detail": "#525b57",
+            "floor": "#454c4b",
+            "bg": "#101618",
+            "item": "#e8bd78",
+            "task": "GATHER SUPPLIES",
+            "collect": "CRATES",
+            "count": 4,
+            "ambient": 0.24
+      },
+      {
+            "id": "boiler",
+            "wikiLevel": 2,
+            "name": "ABANDONED UTILITY HALLS",
+            "subtitle": "NARROW TUNNELS \u00b7 TANGLED PIPES \u00b7 FORGOTTEN MACHINERY",
+            "layout": "halls",
+            "wall": "#837568",
+            "edge": "#b8aa8e",
+            "detail": "#463f38",
+            "floor": "#393937",
+            "bg": "#100e0c",
+            "item": "#fda16a",
+            "task": "REPAIR THE PIPE NETWORK",
+            "collect": "VALVES",
+            "count": 2,
+            "ambient": 0.16
+      },
+      {
+            "id": "electrical",
+            "wikiLevel": 3,
+            "name": "ELECTRICAL STATION",
+            "subtitle": "BRICK PASSAGES \u00b7 LIVE WIRES \u00b7 GENERATOR ROOMS",
+            "layout": "cross",
+            "wall": "#875a48",
+            "edge": "#b58166",
+            "detail": "#3f342f",
+            "floor": "#4c4844",
+            "bg": "#140e0c",
+            "item": "#b9f7cf",
+            "task": "ISOLATE THE GENERATORS",
+            "collect": "BREAKERS",
+            "count": 3,
+            "ambient": 0.16
+      },
+      {
+            "id": "pools",
+            "wikiLevel": 37,
+            "name": "SUBLIMITY",
+            "subtitle": "WHITE CERAMIC \u00b7 BLUE-GREEN WATER \u00b7 IMPOSSIBLE POOLS",
+            "layout": "pools",
+            "wall": "#d1e2df",
+            "edge": "#f4faf1",
+            "detail": "#819f9e",
+            "floor": "#387e8b",
+            "bg": "#10282c",
+            "item": "#ffc778",
+            "task": "SURVEY THE POOLS",
+            "collect": "MARKERS",
+            "count": 4,
+            "ambient": 0.42
+      },
+      {
+            "id": "fun",
+            "wikiLevel": "FUN",
+            "name": "THE PARTY ROOMS",
+            "subtitle": "BALLOONS \u00b7 EMPTY PARTY TABLES \u00b7 SMILES THAT NEVER CHANGE",
+            "layout": "party",
+            "wall": "#c7a05d",
+            "edge": "#f8d88a",
+            "detail": "#916239",
+            "floor": "#795747",
+            "bg": "#211018",
+            "item": "#a5f5e9",
+            "task": "RECOVER THE PARTY INVITATIONS",
+            "collect": "INVITATIONS",
+            "count": 5,
+            "ambient": 0.27
+      },
+      {
+            "id": "garage",
+            "wikiLevel": 35,
+            "name": "AN EMPTY CAR PARK",
+            "subtitle": "EMPTY PARKING BAYS \u00b7 COLORED LIGHTS \u00b7 CONCRETE RAMPS",
+            "layout": "garage",
+            "wall": "#727e7a",
+            "edge": "#b2bca8",
+            "detail": "#374b49",
+            "floor": "#404a4c",
+            "bg": "#0c171d",
+            "item": "#f2d476",
+            "task": "RESTORE THE EXIT GATES",
+            "collect": "KEYCARDS",
+            "count": 4,
+            "ambient": 0.24
+      }
+],
+    BACKROOMS_MONSTERS: [
+      { id: 'stalker', name: 'STALKER', sprite: 'horrorStalker', hp: 2, speed: 1.2 },
+      { id: 'furnace', name: 'FURNACE', sprite: 'horrorFurnace', hp: 4, speed: 0.65 },
+      { id: 'mimic', name: 'MIMIC', sprite: 'horrorMimic', hp: 2, speed: 1.5 }
+    ],
+    BACKROOMS_ECOTYPES: {
+      "lobby": [
+            {
+                  "id": "wallflower",
+                  "name": "WALLFLOWER",
+                  "base": "stalker",
+                  "shell": "#b8a071",
+                  "glow": "#fff1cc",
+                  "anatomy": "watcher",
+                  "hp": 2,
+                  "speed": 0.95
+            },
+            {
+                  "id": "peeler",
+                  "name": "THE PEELER",
+                  "base": "mimic",
+                  "shell": "#8e805e",
+                  "glow": "#bfe9cf",
+                  "anatomy": "longarms",
+                  "hp": 3,
+                  "speed": 1.15
+            }
+      ],
+      "warehouse": [
+            {
+                  "id": "pallet",
+                  "name": "PALLET CRAWLER",
+                  "base": "stalker",
+                  "shell": "#9a7959",
+                  "glow": "#e7c98c",
+                  "anatomy": "crawler",
+                  "hp": 3,
+                  "speed": 0.9
+            },
+            {
+                  "id": "cratejaw",
+                  "name": "CRATE JAW",
+                  "base": "mimic",
+                  "shell": "#716856",
+                  "glow": "#f4dfb1",
+                  "anatomy": "jaw",
+                  "hp": 3,
+                  "speed": 1.25
+            }
+      ],
+      "boiler": [
+            {
+                  "id": "pipeleech",
+                  "name": "PIPE LEECH",
+                  "base": "stalker",
+                  "shell": "#8f6852",
+                  "glow": "#ea9b62",
+                  "anatomy": "tentacles",
+                  "hp": 2,
+                  "speed": 1.35
+            },
+            {
+                  "id": "pressure",
+                  "name": "PRESSURE MAW",
+                  "base": "furnace",
+                  "shell": "#78635a",
+                  "glow": "#ffbe78",
+                  "anatomy": "furnace",
+                  "hp": 5,
+                  "speed": 0.6
+            }
+      ],
+      "electrical": [
+            {
+                  "id": "wirewidow",
+                  "name": "WIRE WIDOW",
+                  "base": "stalker",
+                  "shell": "#68716b",
+                  "glow": "#b4eace",
+                  "anatomy": "spider",
+                  "hp": 3,
+                  "speed": 1.2
+            },
+            {
+                  "id": "relay",
+                  "name": "RELAY HEAD",
+                  "base": "mimic",
+                  "shell": "#8e9c8b",
+                  "glow": "#f7ec92",
+                  "anatomy": "antenna",
+                  "hp": 3,
+                  "speed": 1.4
+            }
+      ],
+      "pools": [
+            {
+                  "id": "drowned",
+                  "name": "DROWNED TOASTER",
+                  "base": "furnace",
+                  "shell": "#7ba6a0",
+                  "glow": "#d8fff1",
+                  "anatomy": "tentacles",
+                  "hp": 4,
+                  "speed": 0.7
+            },
+            {
+                  "id": "porcelain",
+                  "name": "PORCELAIN GRIN",
+                  "base": "mimic",
+                  "shell": "#d2e0d7",
+                  "glow": "#a0e6e9",
+                  "anatomy": "jaw",
+                  "hp": 2,
+                  "speed": 1.35
+            }
+      ],
+      "fun": [
+            {
+                  "id": "partyhost",
+                  "name": "PARTY TOASTER",
+                  "base": "mimic",
+                  "shell": "#cab56b",
+                  "glow": "#ff9fae",
+                  "anatomy": "party",
+                  "hp": 3,
+                  "speed": 1.35
+            },
+            {
+                  "id": "cakejaw",
+                  "name": "BIRTHDAY MAW",
+                  "base": "furnace",
+                  "shell": "#b89788",
+                  "glow": "#f7d483",
+                  "anatomy": "cake",
+                  "hp": 5,
+                  "speed": 0.7
+            }
+      ],
+      "garage": [
+            {
+                  "id": "headlights",
+                  "name": "HEADLIGHT HOUND",
+                  "base": "stalker",
+                  "shell": "#677e80",
+                  "glow": "#f9edbc",
+                  "anatomy": "hound",
+                  "hp": 3,
+                  "speed": 1.45
+            },
+            {
+                  "id": "meter",
+                  "name": "PARKING METER MIMIC",
+                  "base": "mimic",
+                  "shell": "#829290",
+                  "glow": "#b7ffad",
+                  "anatomy": "meter",
+                  "hp": 4,
+                  "speed": 1.1
+            }
+      ]
+},
+    BACKROOMS_MIMIC_WAKE: 145,
+    BACKROOMS_THREAT_RADIUS: 160,
+    BACKROOMS_PLAYER_SPEED: 175,
+    BACKROOMS_MONSTER_SPEED: 48,
+    BACKROOMS_SHOT_SPEED: 440,
+    BACKROOMS_FIRE_DELAY: 0.25,
+    BACKROOMS_SHOT_LIFE: 1.4,
+    SURVIVAL_CLEAR_WAIT: 0.15,
+    SECRET_CHARACTERS: ['burrito', 'smore'],
+    SECRET_UNLOCK_WAVES: { burrito: 5, smore: 7 },
     BURRITO_UNLOCK_WAVE: 5,
     BURRITO_REVEAL_TIME: 2.5,
 
